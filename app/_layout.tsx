@@ -1,0 +1,96 @@
+import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import {
+  Inter_400Regular,
+  Inter_500Medium,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  Inter_800ExtraBold,
+} from '@expo-google-fonts/inter';
+import {
+  SpaceGrotesk_500Medium,
+  SpaceGrotesk_600SemiBold,
+  SpaceGrotesk_700Bold,
+} from '@expo-google-fonts/space-grotesk';
+import { useFonts } from 'expo-font';
+import { Stack } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect } from 'react';
+import 'react-native-reanimated';
+
+import { AuthProvider } from '@/context/AuthContext';
+import { DialogProvider } from '@/context/DialogContext';
+import { TransitionProvider } from '@/context/TransitionContext';
+import { AppColors } from '@/constants/theme';
+import { installGlobalFont } from '@/lib/global-font';
+
+installGlobalFont();
+SplashScreen.preventAutoHideAsync();
+
+const MyBDETheme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    primary: AppColors.primary,
+    background: AppColors.background,
+    card: AppColors.white,
+    text: AppColors.text,
+    border: AppColors.border,
+  },
+};
+
+export const unstable_settings = {
+  anchor: '(tabs)',
+};
+
+export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    SpaceGrotesk_500Medium,
+    SpaceGrotesk_600SemiBold,
+    SpaceGrotesk_700Bold,
+    Inter_400Regular,
+    Inter_500Medium,
+    Inter_600SemiBold,
+    Inter_700Bold,
+    Inter_800ExtraBold,
+  });
+
+  useEffect(() => {
+    if (fontsLoaded) {
+      SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded]);
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
+  return (
+    <AuthProvider>
+      <DialogProvider>
+        <TransitionProvider>
+          <ThemeProvider value={MyBDETheme}>
+            <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="index" />
+              <Stack.Screen name="(auth)" />
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen
+                name="event/[id]"
+                options={{ headerShown: false, animation: 'slide_from_right' }}
+              />
+              <Stack.Screen
+                name="ticketing/[id]"
+                options={{ presentation: 'modal', headerShown: false }}
+              />
+              <Stack.Screen
+                name="recharge"
+                options={{ presentation: 'modal', headerShown: false }}
+              />
+            </Stack>
+            <StatusBar style="dark" />
+          </ThemeProvider>
+        </TransitionProvider>
+      </DialogProvider>
+    </AuthProvider>
+  );
+}
