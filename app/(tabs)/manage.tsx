@@ -99,6 +99,7 @@ export default function ManageScreen() {
   const [topNav, setTopNav] = useState<'bde' | 'users'>('bde');
   const [bdeQuery, setBdeQuery] = useState('');
   const [managedBde, setManagedBde] = useState<BDE | null>(null);
+  const [createBdeVisible, setCreateBdeVisible] = useState(false);
   const [managedBdes, setManagedBdes] = useState<BDE[]>([]);
   const [selectedBdeId, setSelectedBdeId] = useState<string>('');
   const [loading, setLoading] = useState(true);
@@ -658,6 +659,12 @@ export default function ManageScreen() {
         {/* Navigateur de BDE (super admin) : dropdown/recherche pour cibler un BDE */}
         {showBrowser && (
           <>
+            <Button
+              title="Créer un BDE"
+              size="sm"
+              onPress={() => setCreateBdeVisible(true)}
+              style={{ alignSelf: 'flex-start', marginBottom: Spacing.base }}
+            />
             <View style={styles.searchBox}>
               <Ionicons name="search" size={18} color={AppColors.textLight} />
               <TextInput
@@ -1119,6 +1126,19 @@ export default function ManageScreen() {
         dialog={dialog}
         onUpdated={(updated) => { markDirty(); onBdeUpdated(updated); }}
         onClose={() => setManagedBde(null)}
+      />
+
+      {/* Modale de création d'un BDE avec désignation des admins (super admin) */}
+      <BdeCreateModal
+        visible={createBdeVisible}
+        dialog={dialog}
+        onClose={() => setCreateBdeVisible(false)}
+        onCreated={(created) => {
+          markDirty();
+          setManagedBdes((prev) => [...prev, created]);
+          setCreateBdeVisible(false);
+          openBde(created.id);
+        }}
       />
     </SafeAreaView>
   );
@@ -1673,6 +1693,176 @@ function UserAdminModal({ user: u, currentUserId, allBdes, dialog, onRefresh, on
               )}
             </ScrollView>
           )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+interface BdeCreateModalProps {
+  visible: boolean;
+  dialog: ReturnType<typeof useDialog>;
+  onCreated: (created: BDE) => void;
+  onClose: () => void;
+}
+
+/**
+ * Création d'un BDE par le super admin, avec désignation immédiate d'un ou
+ * plusieurs administrateurs. L'API les ajoute comme membres admin et les fait
+ * passer au rôle ADMIN_BDE ; un utilisateur qui administre déjà un autre BDE
+ * est refusé côté serveur (un admin ne gère qu'un seul BDE).
+ */
+function BdeCreateModal({ visible, dialog, onCreated, onClose }: BdeCreateModalProps) {
+  const { width, height } = useWindowDimensions();
+  const isDesktop = width >= 600;
+  const cardHeight = isDesktop ? Math.min(620, Math.round(height * 0.9)) : height;
+  const cardWidth = isDesktop ? Math.min(540, Math.round(width * 0.9)) : width;
+
+  const [name, setName] = useState('');
+  const [university, setUniversity] = useState('');
+  const [description, setDescription] = useState('');
+  const [adminIds, setAdminIds] = useState<string[]>([]);
+  const [candidates, setCandidates] = useState<AdminUser[]>([]);
+  const [userQuery, setUserQuery] = useState('');
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Réinitialise le formulaire à chaque ouverture.
+  useEffect(() => {
+    if (!visible) return;
+    setName('');
+    setUniversity('');
+    setDescription('');
+    setAdminIds([]);
+    setUserQuery('');
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    setLoadingUsers(true);
+    const timer = setTimeout(async () => {
+      try {
+        const res = await api.getUsers({ search: userQuery.trim() || undefined, limit: 20 });
+        if (!cancelled) setCandidates(res.users);
+      } catch {
+        if (!cancelled) setCandidates([]);
+      } finally {
+        if (!cancelled) setLoadingUsers(false);
+      }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [visible, userQuery]);
+
+  const selected = candidates.filter((u) => adminIds.includes(u.id));
+  const canSubmit = name.trim().length > 0 && university.trim().length > 0 && !saving;
+
+  const toggleAdmin = (id: string) =>
+    setAdminIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSaving(true);
+    try {
+      const created = await api.createBde({
+        name: name.trim(),
+        university: university.trim(),
+        description: description.trim() || undefined,
+        adminUserIds: adminIds.length > 0 ? adminIds : undefined,
+      });
+      onCreated(created);
+    } catch (e) {
+      dialog.alert({
+        title: 'Création impossible',
+        message: e instanceof Error ? e.message : 'Le BDE n\'a pas pu être créé',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType={isDesktop ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
+      <View style={[StyleSheet.absoluteFill, styles.modalOverlay, isDesktop && styles.modalOverlayDesktop]}>
+        <View style={[styles.modalCard, { height: cardHeight, width: cardWidth }, isDesktop && styles.modalCardDesktop]}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Nouveau BDE</Text>
+            <Pressable onPress={onClose}>
+              <Ionicons name="close" size={24} color={AppColors.text} />
+            </Pressable>
+          </View>
+
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: Spacing.sm }} keyboardShouldPersistTaps="handled">
+            <Field label="Nom" value={name} onChange={setName} placeholder="BDE Informatique" />
+            <Field label="Université" value={university} onChange={setUniversity} placeholder="Université de Lille" />
+            <Field label="Description" value={description} onChange={setDescription} placeholder="Décrivez le BDE…" multiline />
+
+            <Text style={styles.sectionLabel}>
+              ADMINISTRATEURS {adminIds.length > 0 ? `(${adminIds.length})` : ''}
+            </Text>
+            <Text style={[styles.itemMeta, { marginBottom: Spacing.sm }]}>
+              Facultatif. Les utilisateurs choisis passeront en rôle Admin BDE.
+            </Text>
+
+            {selected.length > 0 && (
+              <View style={styles.itemActions}>
+                {selected.map((u) => (
+                  <Pressable key={u.id} onPress={() => toggleAdmin(u.id)} style={[styles.chip, styles.chipActive]}>
+                    <Text style={[styles.chipText, styles.chipTextActive]}>{u.displayName} ✕</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+
+            <View style={[styles.searchBox, { marginTop: Spacing.md }]}>
+              <Ionicons name="search" size={18} color={AppColors.textLight} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Rechercher un utilisateur…"
+                placeholderTextColor={AppColors.textLight}
+                value={userQuery}
+                onChangeText={setUserQuery}
+              />
+            </View>
+
+            {loadingUsers ? (
+              <ActivityIndicator color={AppColors.primary} />
+            ) : candidates.length === 0 ? (
+              <Empty label="Aucun utilisateur" />
+            ) : (
+              candidates.map((u) => {
+                const picked = adminIds.includes(u.id);
+                return (
+                  <Pressable key={u.id} onPress={() => toggleAdmin(u.id)}>
+                    <Card variant="outlined" style={styles.itemCard}>
+                      <View style={styles.itemHeader}>
+                        <Avatar name={u.displayName} uri={u.profilePicture} size={36} />
+                        <View style={{ flex: 1, marginLeft: Spacing.sm }}>
+                          <Text style={styles.itemTitle}>{u.displayName}</Text>
+                          <Text style={styles.itemMeta}>{u.email}</Text>
+                        </View>
+                        <Ionicons
+                          name={picked ? 'checkmark-circle' : 'ellipse-outline'}
+                          size={22}
+                          color={picked ? AppColors.primary : AppColors.textLight}
+                        />
+                      </View>
+                    </Card>
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+
+          <View style={styles.itemActions}>
+            <Button title="Annuler" variant="outline" size="sm" onPress={onClose} />
+            <Button
+              title={saving ? 'Création…' : 'Créer le BDE'}
+              size="sm"
+              onPress={submit}
+              disabled={!canSubmit}
+            />
+          </View>
         </View>
       </View>
     </Modal>
