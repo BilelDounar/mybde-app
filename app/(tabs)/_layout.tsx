@@ -17,6 +17,11 @@ export default function TabLayout() {
   const { user } = useAuth();
   const useSidebar = width >= SIDEBAR_BREAKPOINT;
   const isManager = user?.role === 'admin_bde' || user?.role === 'super_admin';
+  // Le super admin n'est membre d'aucun BDE : les onglets Événements et Billets
+  // (scopés aux BDE rejoints) n'ont pas de sens pour lui et l'inciteraient à tort
+  // à rejoindre un BDE. Il pilote tout depuis l'Accueil (dashboard) et la Gestion.
+  const isSuperAdmin = user?.role === 'super_admin';
+  const isAdminBde = user?.role === 'admin_bde';
 
   return (
     <Tabs
@@ -44,6 +49,7 @@ export default function TabLayout() {
         name="events"
         options={{
           title: 'Événements',
+          href: isSuperAdmin ? null : '/events',
           tabBarIcon: ({ color, focused }) => (
             <Ionicons name={focused ? 'calendar' : 'calendar-outline'} size={24} color={color} />
           ),
@@ -52,10 +58,13 @@ export default function TabLayout() {
       <Tabs.Screen
         name="tickets"
         options={{
-          title: 'Billets',
+          title: isAdminBde ? 'Présence' : 'Billets',
+          href: isSuperAdmin ? null : '/tickets',
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
-              name={focused ? 'ticket' : 'ticket-outline'}
+              name={isAdminBde
+                ? (focused ? 'qr-code' : 'qr-code-outline')
+                : (focused ? 'ticket' : 'ticket-outline')}
               size={24}
               color={color}
             />

@@ -36,7 +36,7 @@ export function TransitionProvider({ children }: { children: React.ReactNode }) 
     <TransitionContext.Provider value={{ markDirty, flashIfDirty }}>
       {children}
       {visible && (
-        <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.curtain, { opacity }]} />
+        <Animated.View style={[StyleSheet.absoluteFill, styles.curtain, { opacity, pointerEvents: 'none' }]} />
       )}
     </TransitionContext.Provider>
   );

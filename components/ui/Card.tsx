@@ -29,11 +29,7 @@ const styles = StyleSheet.create({
   },
   elevated: {
     backgroundColor: AppColors.card,
-    shadowColor: AppColors.black,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 3,
+    boxShadow: '0px 2px 12px rgba(0, 0, 0, 0.08)',
   },
   outlined: {
     backgroundColor: AppColors.card,

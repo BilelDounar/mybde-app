@@ -15,6 +15,7 @@ import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import { Platform } from 'react-native';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
 
@@ -74,17 +75,22 @@ export default function RootLayout() {
               <Stack.Screen name="index" />
               <Stack.Screen name="(auth)" />
               <Stack.Screen name="(tabs)" />
+              {/* Guide de démarrage affiché juste après l'inscription. */}
+              <Stack.Screen name="onboarding" options={{ headerShown: false, animation: 'fade' }} />
               <Stack.Screen
                 name="event/[id]"
                 options={{ headerShown: false, animation: 'slide_from_right' }}
               />
+              {/* Sur le web, la présentation « modal » de react-native-screens
+                  peut se démonter aussitôt (l'écran apparaît puis disparaît) :
+                  on retombe sur une présentation « card » (page pleine) fiable. */}
               <Stack.Screen
                 name="ticketing/[id]"
-                options={{ presentation: 'modal', headerShown: false }}
+                options={{ presentation: Platform.OS === 'web' ? 'card' : 'modal', headerShown: false }}
               />
               <Stack.Screen
                 name="recharge"
-                options={{ presentation: 'modal', headerShown: false }}
+                options={{ presentation: Platform.OS === 'web' ? 'card' : 'modal', headerShown: false }}
               />
             </Stack>
             <StatusBar style="dark" />

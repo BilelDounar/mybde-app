@@ -5,6 +5,10 @@ import { SidebarTabBar } from '../SidebarTabBar';
 import { TransitionProvider } from '@/context/TransitionContext';
 import { AuthProvider } from '@/context/AuthContext';
 
+// Props réelles attendues par le composant : évite de « spread » un `never`
+// (les mocks ci-dessous sont partiels, castés via `unknown`).
+type SidebarTabBarProps = React.ComponentProps<typeof SidebarTabBar>;
+
 function renderWithProviders(ui: React.ReactElement) {
   return render(
     <AuthProvider>
@@ -37,7 +41,7 @@ function makeProps(activeIndex: number, emit = jest.fn(() => ({ defaultPrevented
     descriptors,
     navigation: { emit, dispatch },
     insets: { top: 0, right: 0, bottom: 0, left: 0 },
-  } as never;
+  } as unknown as SidebarTabBarProps;
 }
 
 describe('SidebarTabBar', () => {
@@ -81,7 +85,7 @@ describe('SidebarTabBar', () => {
       options: { title: 'Gestion', tabBarItemStyle: { display: 'none' } },
     };
 
-    const { queryByText } = renderWithProviders(<SidebarTabBar {...(props as never)} />);
+    const { queryByText } = renderWithProviders(<SidebarTabBar {...(props as unknown as SidebarTabBarProps)} />);
 
     expect(queryByText('Gestion')).toBeNull();
     expect(queryByText('Accueil')).toBeTruthy();

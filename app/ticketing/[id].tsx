@@ -1,25 +1,25 @@
-import { Ionicons } from '@expo/vector-icons';
-import { router, useLocalSearchParams } from 'expo-router';
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
   View,
+  Text,
+  ScrollView,
+  Pressable,
+  StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { router, useLocalSearchParams } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
-import { PageTitle } from '@/components/PageTitle';
 import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
-import { AppColors, BorderRadius, FontSizes, Spacing } from '@/constants/theme';
+import { Card } from '@/components/ui/Card';
+import { PageTitle } from '@/components/PageTitle';
+import { AppColors, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
+import { api } from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
 import { useDialog } from '@/context/DialogContext';
 import { useTransition } from '@/context/TransitionContext';
-import { api } from '@/services/api';
 import type { Event } from '@/types';
 
 type Step = 1 | 2 | 3;
@@ -200,7 +200,7 @@ export default function TicketingScreen() {
             {/* Name & Email */}
             <Input
               label="Nom complet"
-              placeholder="Nom et prénom"
+              placeholder="Bilel Dounar"
               value={name}
               onChangeText={setName}
               icon="person-outline"

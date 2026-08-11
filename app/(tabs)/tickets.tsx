@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -21,13 +21,25 @@ import { Button } from '@/components/ui/Button';
 import { Avatar } from '@/components/ui/Avatar';
 import { PageTitle } from '@/components/PageTitle';
 import { JoinBdeBanner } from '@/components/JoinBdeBanner';
-import { AppColors, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
+import { AttendeesManager } from '@/components/AttendeesManager';
+import { AppColors, FontFamily, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
 import { api } from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
 import { useDialog } from '@/context/DialogContext';
-import type { Ticket } from '@/types';
+import type { Ticket, Event } from '@/types';
 
 export default function TicketsScreen() {
+  const { user } = useAuth();
+
+  // Un admin BDE ne gère pas de billets perso : cet onglet devient l'outil de
+  // confirmation des présences (scan QR caméra + code) sur ses événements.
+  if (user?.role === 'admin_bde') {
+    return <AdminPresenceScreen />;
+  }
+  return <StudentTicketsScreen />;
+}
+
+function StudentTicketsScreen() {
   const { user, refreshUser } = useAuth();
   const dialog = useDialog();
   const [expandedQR, setExpandedQR] = useState<string | null>(null);
@@ -418,6 +430,93 @@ export default function TicketsScreen() {
   );
 }
 
+// ─── Écran Présence (admin BDE) ────────────────────────────
+
+function AdminPresenceScreen() {
+  const dialog = useDialog();
+  const [events, setEvents] = useState<Event[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .getAdminEvents({ limit: 50 })
+      .then((res) => setEvents(res.events))
+      .catch((e) => console.error('Erreur événements présence:', e))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Uniquement les événements à venir (non passés) du BDE, du plus proche au
+  // plus lointain. Un événement passé n'a plus de présence à confirmer.
+  const upcoming = useMemo(() => {
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    return events
+      .filter((e) => e.status !== 'completed' && new Date(e.date).getTime() >= startOfToday.getTime())
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [events]);
+
+  // Présélection sur le prochain événement à venir.
+  useEffect(() => {
+    setSelectedId((prev) => {
+      if (prev && upcoming.some((e) => e.id === prev)) return prev;
+      return upcoming[0]?.id ?? null;
+    });
+  }, [upcoming]);
+
+  const selectedEvent = upcoming.find((e) => e.id === selectedId) ?? null;
+
+  const openEventPicker = () => {
+    dialog.choose({
+      title: 'Choisir un événement',
+      choices: upcoming.map((ev) => ({
+        text: `${ev.title} — ${formatShortDate(ev.date)}`,
+        onPress: () => setSelectedId(ev.id),
+      })),
+    });
+  };
+
+  return (
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <PageTitle title="Présence" />
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Présence</Text>
+      </View>
+
+      {loading ? (
+        <View style={styles.loadingBox}>
+          <ActivityIndicator size="large" color={AppColors.primary} />
+        </View>
+      ) : upcoming.length === 0 ? (
+        <View style={styles.loadingBox}>
+          <Ionicons name="calendar-outline" size={48} color={AppColors.textLight} />
+          <Text style={styles.emptyText}>Aucun événement à venir</Text>
+        </View>
+      ) : (
+        <View style={styles.presenceBody}>
+          <Text style={styles.presenceHint}>Sélectionnez un événement puis scannez ou saisissez le code des billets.</Text>
+          <View style={styles.presenceSelectWrap}>
+            <Pressable style={styles.presenceSelect} onPress={openEventPicker}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.presenceSelectLabel}>Événement</Text>
+                <Text style={styles.presenceSelectValue} numberOfLines={1}>
+                  {selectedEvent ? `${selectedEvent.title} · ${formatShortDate(selectedEvent.date)}` : 'Choisir…'}
+                </Text>
+              </View>
+              <Ionicons name="chevron-down" size={18} color={AppColors.textSecondary} />
+            </Pressable>
+          </View>
+          {selectedId && (
+            <View style={styles.presenceManager}>
+              <AttendeesManager eventId={selectedId} dialog={dialog} />
+            </View>
+          )}
+        </View>
+      )}
+    </SafeAreaView>
+  );
+}
+
 // ─── Helpers ───────────────────────────────────────────────
 
 function formatTicketDate(dateStr: string): string {
@@ -459,6 +558,49 @@ const styles = StyleSheet.create({
   emptyText: {
     fontSize: FontSizes.base,
     color: AppColors.textSecondary,
+  },
+
+  // Présence (admin BDE)
+  presenceBody: {
+    flex: 1,
+  },
+  presenceHint: {
+    fontFamily: FontFamily.body,
+    fontSize: FontSizes.sm,
+    color: AppColors.textSecondary,
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.md,
+  },
+  presenceSelectWrap: {
+    paddingHorizontal: Spacing.xl,
+    marginBottom: Spacing.md,
+  },
+  presenceSelect: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: AppColors.white,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+    minHeight: 52,
+  },
+  presenceSelectLabel: {
+    fontFamily: FontFamily.body,
+    fontSize: FontSizes.xs,
+    color: AppColors.textLight,
+  },
+  presenceSelectValue: {
+    fontFamily: FontFamily.bodySemibold,
+    fontSize: FontSizes.base,
+    color: AppColors.text,
+    marginTop: 1,
+  },
+  presenceManager: {
+    flex: 1,
+    paddingHorizontal: Spacing.xl,
   },
 
   // Credits
@@ -554,11 +696,7 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 2,
+    boxShadow: '0px 2px 8px rgba(0, 0, 0, 0.1)',
   },
   qrExpanded: {
     width: 200,
@@ -646,11 +784,7 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.lg,
     backgroundColor: AppColors.white,
     borderRadius: BorderRadius.lg,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    elevation: 4,
+    boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.1)',
   },
   qrSectionLarge: {
     alignItems: 'center',
@@ -662,11 +796,7 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     backgroundColor: AppColors.white,
     borderRadius: BorderRadius.md,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 2,
+    boxShadow: '0px 2px 8px rgba(0, 0, 0, 0.1)',
   },
   qrCodeText: {
     fontSize: FontSizes.sm,

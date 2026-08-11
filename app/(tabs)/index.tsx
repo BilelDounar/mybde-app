@@ -9,6 +9,7 @@ import {
   RefreshControl,
   ActivityIndicator,
   Platform,
+  Image,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -23,7 +24,8 @@ import { Avatar } from '@/components/ui/Avatar';
 import { Logo } from '@/components/ui/Logo';
 import { PageTitle } from '@/components/PageTitle';
 import { JoinBdeBanner } from '@/components/JoinBdeBanner';
-import { AppColors, FontFamily, FontSizes, Gradients, Spacing, BorderRadius } from '@/constants/theme';
+import { SuperAdminDashboard } from '@/components/SuperAdminDashboard';
+import { AppColors, FontFamily, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
 import { getCategoryMeta } from '@/constants/eventCategories';
 import { api } from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
@@ -45,6 +47,8 @@ export default function HomeScreen() {
   const firstName = (user?.displayName ?? '').trim().split(' ')[0] || 'toi';
 
   const loadData = useCallback(async () => {
+    // Le super admin voit un tableau de bord, pas le fil scopé aux BDE rejoints.
+    if (user?.role === 'super_admin') return;
     try {
       const [eventsData, newsData] = await Promise.all([
         api.getEvents(),
@@ -55,7 +59,7 @@ export default function HomeScreen() {
     } catch (e) {
       console.error('Erreur chargement accueil:', e);
     }
-  }, [user?.id]);
+  }, [user?.id, user?.role]);
 
   useEffect(() => {
     loadData().finally(() => setLoading(false));
@@ -112,6 +116,11 @@ export default function HomeScreen() {
     setRefreshing(false);
   };
 
+  // Accueil du super admin : tableau de bord global de la plateforme.
+  if (user?.role === 'super_admin') {
+    return <SuperAdminDashboard firstName={firstName} />;
+  }
+
   if (loading) {
     return (
       <SafeAreaView style={[styles.container, styles.center]} edges={['top']}>
@@ -136,16 +145,6 @@ export default function HomeScreen() {
             <Text style={styles.headerTitle}>MyBDE</Text>
           </View>
         </View>
-
-        {/* Hero greeting */}
-        <LinearGradient
-          colors={Gradients.hero}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.hero}
-        >
-          <Text style={styles.heroHello}>Salut {firstName},</Text>
-        </LinearGradient>
 
         {/* Search Bar */}
         <View style={styles.searchContainer}>
@@ -238,6 +237,9 @@ export default function HomeScreen() {
             {/* Post Content */}
             <Text style={styles.postContent}>{post.content}</Text>
 
+            {/* Post Image */}
+            {post.image ? <NewsImage uri={post.image} /> : null}
+
             {/* Post Actions */}
             <View style={styles.postActions}>
               <Pressable style={styles.actionButton} onPress={() => toggleLike(post.id)}>
@@ -259,6 +261,33 @@ export default function HomeScreen() {
         <View style={{ height: Spacing.xxl }} />
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+// ─── News image ────────────────────────────────────────────
+
+/**
+ * Image d'actualité : conserve le ratio d'origine (récupéré via Image.getSize)
+ * tout en plafonnant la taille affichée (largeur et hauteur), pour éviter des
+ * images démesurées tout en évitant la déformation.
+ */
+function NewsImage({ uri }: { uri: string }) {
+  const [ratio, setRatio] = useState<number | null>(null);
+  useEffect(() => {
+    let active = true;
+    Image.getSize(
+      uri,
+      (w, h) => { if (active && h > 0) setRatio(w / h); },
+      () => { if (active) setRatio(16 / 9); },
+    );
+    return () => { active = false; };
+  }, [uri]);
+  return (
+    <Image
+      source={{ uri }}
+      style={[styles.postImage, { aspectRatio: ratio ?? 16 / 9 }]}
+      resizeMode="cover"
+    />
   );
 }
 
@@ -297,27 +326,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
 
-  // Hero
-  hero: {
-    marginHorizontal: Spacing.xl,
-    marginBottom: Spacing.lg,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    borderRadius: BorderRadius.xxl,
-  },
-  heroHello: {
-    fontFamily: FontFamily.bodyMedium,
-    fontSize: FontSizes.base,
-    color: 'rgba(255,255,255,0.85)',
-    marginBottom: Spacing.xs,
-  },
-  heroTitle: {
-    fontFamily: FontFamily.display,
-    fontSize: FontSizes.lg,
-    color: AppColors.white,
-    letterSpacing: -0.3,
-    lineHeight: 26,
-  },
   // Search
   searchContainer: {
     flexDirection: 'row',
@@ -424,6 +432,14 @@ const styles = StyleSheet.create({
     color: AppColors.text,
     lineHeight: 22,
     marginBottom: Spacing.md,
+  },
+  postImage: {
+    width: '100%',
+    maxWidth: 480,
+    maxHeight: 360,
+    borderRadius: BorderRadius.lg,
+    marginBottom: Spacing.md,
+    backgroundColor: AppColors.surface,
   },
   emptySearch: {
     fontSize: FontSizes.sm,

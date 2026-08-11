@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -22,6 +23,7 @@ import { LeafletMap } from '@/components/ui/LeafletMap';
 import { AppColors, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
 import { getCategoryMeta } from '@/constants/eventCategories';
 import { api } from '@/services/api';
+import { useAuth } from '@/context/AuthContext';
 import type { Event, EventParticipant } from '@/types';
 
 // Au-delà de ce seuil, la page adopte une mise en page desktop à deux
@@ -32,7 +34,11 @@ const DESKTOP_BREAKPOINT = 1024;
 export default function EventDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { width: SCREEN_WIDTH } = useWindowDimensions();
+  const { user } = useAuth();
   const isDesktop = SCREEN_WIDTH >= DESKTOP_BREAKPOINT;
+  // Un admin BDE / super admin ne peut pas acheter de billet (il organise et est
+  // présent d'office) : l'achat est réservé aux étudiants.
+  const purchaseBlocked = user?.role === 'admin_bde' || user?.role === 'super_admin';
   const [quantity, setQuantity] = useState(1);
   const [showFullDescription, setShowFullDescription] = useState(false);
   const [event, setEvent] = useState<Event | null>(null);
@@ -185,6 +191,16 @@ export default function EventDetailScreen() {
     </View>
   );
 
+  // Message affiché à la place de l'achat pour les rôles administrateurs.
+  const blockedNotice = (
+    <View style={styles.blockedNotice}>
+      <Ionicons name="shield-checkmark-outline" size={18} color={AppColors.textSecondary} />
+      <Text style={styles.blockedText}>
+        Achat réservé aux étudiants. En tant qu&apos;administrateur, vous gérez cet événement.
+      </Text>
+    </View>
+  );
+
   // Sans `height` : la carte remplit son conteneur (carte carrée du sidebar desktop).
   const mapBlock = (height?: number) => (
     <View style={[styles.mapPreview, height == null && styles.mapPreviewSquare, height != null && { height }]}>
@@ -199,13 +215,51 @@ export default function EventDetailScreen() {
     </View>
   );
 
-  // ─── Mise en page desktop (≥1024px) : deux colonnes ────────────────
+  // ─── Mise en page desktop (≥1024px) : barre fixe + deux colonnes ───
   if (isDesktop) {
     return (
       <View style={styles.container}>
         <PageTitle title={event.title} />
+
+        {/* Barre d'action fixe en haut (reste visible au défilement) */}
+        <View style={styles.topBar}>
+          <View style={styles.topBarInner}>
+            <Pressable style={styles.topBarBtn} onPress={() => router.back()} accessibilityLabel="Retour" hitSlop={8}>
+              <Ionicons name="arrow-back" size={22} color={AppColors.text} />
+            </Pressable>
+            <Text style={styles.topBarTitle} numberOfLines={1}>{event.title}</Text>
+            <Pressable style={styles.topBarBtn} onPress={handleShare} accessibilityLabel="Partager" hitSlop={8}>
+              <Ionicons name="share-outline" size={20} color={AppColors.text} />
+            </Pressable>
+            {purchaseBlocked ? (
+              <Text style={styles.topBarBlocked}>Réservé aux étudiants</Text>
+            ) : (
+              <View style={styles.topBarBuy}>
+                <Text style={styles.topBarPrice}>{isFree ? 'Gratuit' : `${event.price.toFixed(2)}€`}</Text>
+                <Button
+                  title={isFree ? "S'inscrire" : 'Acheter'}
+                  onPress={goToTicketing}
+                  size="md"
+                  disabled={spotsLeft <= 0}
+                />
+              </View>
+            )}
+          </View>
+        </View>
+
         <ScrollView showsVerticalScrollIndicator={false}>
-          {heroBlock}
+          {/* Hero épuré : couleur de catégorie + dégradé + badge (sans boutons) */}
+          <View style={[styles.heroImage, styles.heroImageDesktop, { backgroundColor: getCategoryMeta(event.category).heroColor }]}>
+            <Ionicons name={getCategoryMeta(event.category).icon} size={72} color="rgba(255,255,255,0.28)" />
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.35)']}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.heroBadgeWrap}>
+              <Badge label={event.category.toUpperCase()} variant="primary" />
+            </View>
+          </View>
+
           <View style={styles.desktopRow}>
             {/* Colonne gauche : contenu principal */}
             <View style={styles.desktopLeft}>
@@ -215,9 +269,19 @@ export default function EventDetailScreen() {
                 <View style={styles.infoIcon}>
                   <Ionicons name="calendar" size={18} color={AppColors.primary} />
                 </View>
-                <View>
+                <View style={{ flex: 1 }}>
                   <Text style={styles.infoLabel}>{formatFullDate(event.date)}</Text>
                   <Text style={styles.infoSub}>{event.startTime} - {event.endTime}</Text>
+                </View>
+              </View>
+
+              <View style={styles.infoRow}>
+                <View style={styles.infoIcon}>
+                  <Ionicons name="location" size={18} color={AppColors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.infoLabel}>{event.location}</Text>
+                  <Text style={styles.infoSub}>Organisé par {event.bdeName}</Text>
                 </View>
               </View>
 
@@ -229,36 +293,42 @@ export default function EventDetailScreen() {
 
               <View style={styles.divider} />
               {availabilityBlock}
-
-              {/* Achat (carte, pas de barre fixe sur desktop) */}
-              <View style={styles.buyCard}>
-                <View style={styles.priceSection}>
-                  <Text style={styles.priceLabel}>BILLETS DISPONIBLES</Text>
-                  <View style={styles.priceRow}>
-                    <Text style={styles.priceAmount}>
-                      {isFree ? 'Gratuit' : `${totalPrice.toFixed(2)}€`}
-                    </Text>
-                    {!isFree && <Text style={styles.pricePer}> / {quantity > 1 ? `${quantity} pers.` : 'personne'}</Text>}
-                  </View>
-                </View>
-                {quantitySelectorBlock}
-                <Button
-                  title={isFree ? "S'inscrire →" : 'Acheter un billet →'}
-                  onPress={goToTicketing}
-                  fullWidth
-                  size="lg"
-                  disabled={spotsLeft <= 0}
-                  style={{ marginTop: Spacing.base }}
-                />
-                <View style={styles.stripeBadge}>
-                  <Ionicons name="lock-closed" size={12} color={AppColors.textLight} />
-                  <Text style={styles.stripeText}>SÉCURISÉ PAR STRIPE</Text>
-                </View>
-              </View>
             </View>
 
-            {/* Colonne droite : informations + carte carrée */}
+            {/* Colonne droite : achat (panneau) + informations + carte */}
             <View style={styles.desktopSidebar}>
+              <View style={styles.buyCard}>
+                {purchaseBlocked ? (
+                  blockedNotice
+                ) : (
+                  <>
+                    <View style={styles.priceSection}>
+                      <Text style={styles.priceLabel}>BILLETS DISPONIBLES</Text>
+                      <View style={styles.priceRow}>
+                        <Text style={styles.priceAmount}>
+                          {isFree ? 'Gratuit' : `${totalPrice.toFixed(2)}€`}
+                        </Text>
+                        {!isFree && <Text style={styles.pricePer}> / {quantity > 1 ? `${quantity} pers.` : 'personne'}</Text>}
+                      </View>
+                    </View>
+                    <Text style={styles.buySpots}>{spotsLeft} / {event.capacity} places restantes</Text>
+                    {quantitySelectorBlock}
+                    <Button
+                      title={isFree ? "S'inscrire →" : 'Acheter un billet →'}
+                      onPress={goToTicketing}
+                      fullWidth
+                      size="lg"
+                      disabled={spotsLeft <= 0}
+                      style={{ marginTop: Spacing.base }}
+                    />
+                    <View style={styles.stripeBadge}>
+                      <Ionicons name="lock-closed" size={12} color={AppColors.textLight} />
+                      <Text style={styles.stripeText}>SÉCURISÉ PAR STRIPE</Text>
+                    </View>
+                  </>
+                )}
+              </View>
+
               <View style={styles.infoCard}>
                 <Text style={styles.infoCardTitle}>Informations</Text>
                 <View style={styles.infoCardRow}>
@@ -342,22 +412,31 @@ export default function EventDetailScreen() {
               </Text>
               {!isFree && <Text style={styles.pricePer}> / {quantity > 1 ? `${quantity} pers.` : 'personne'}</Text>}
             </View>
+            {/* Places restantes toujours visibles sur mobile */}
+            <Text style={[styles.spotsLine, spotsLeft <= 0 && { color: AppColors.danger }]}>
+              {spotsLeft > 0 ? `${spotsLeft} place${spotsLeft > 1 ? 's' : ''} restante${spotsLeft > 1 ? 's' : ''}` : 'Complet'}
+            </Text>
           </View>
-          {quantitySelectorBlock}
+          {!purchaseBlocked && quantitySelectorBlock}
         </View>
 
-        <Button
-          title={isFree ? "S'inscrire →" : 'Acheter un billet →'}
-          onPress={goToTicketing}
-          fullWidth
-          size="lg"
-          disabled={spotsLeft <= 0}
-        />
-
-        <View style={styles.stripeBadge}>
-          <Ionicons name="lock-closed" size={12} color={AppColors.textLight} />
-          <Text style={styles.stripeText}>SÉCURISÉ PAR STRIPE</Text>
-        </View>
+        {purchaseBlocked ? (
+          blockedNotice
+        ) : (
+          <>
+            <Button
+              title={isFree ? "S'inscrire →" : 'Acheter un billet →'}
+              onPress={goToTicketing}
+              fullWidth
+              size="lg"
+              disabled={spotsLeft <= 0}
+            />
+            <View style={styles.stripeBadge}>
+              <Ionicons name="lock-closed" size={12} color={AppColors.textLight} />
+              <Text style={styles.stripeText}>SÉCURISÉ PAR STRIPE</Text>
+            </View>
+          </>
+        )}
       </View>
     </View>
   );
@@ -390,12 +469,100 @@ const styles = StyleSheet.create({
     color: AppColors.textSecondary,
   },
 
+  // Barre d'action fixe (desktop)
+  topBar: {
+    backgroundColor: AppColors.white,
+    borderBottomWidth: 1,
+    borderBottomColor: AppColors.borderLight,
+    zIndex: 10,
+  },
+  topBarInner: {
+    maxWidth: 1120,
+    width: '100%',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.xxl,
+    height: 64,
+  },
+  topBarBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: AppColors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topBarTitle: {
+    flex: 1,
+    fontSize: FontSizes.md,
+    fontWeight: '700',
+    color: AppColors.text,
+  },
+  topBarBuy: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginLeft: Spacing.sm,
+  },
+  topBarPrice: {
+    fontSize: FontSizes.base,
+    fontWeight: '800',
+    color: AppColors.text,
+    fontVariant: ['tabular-nums'],
+  },
+  topBarBlocked: {
+    fontSize: FontSizes.sm,
+    fontWeight: '600',
+    color: AppColors.textSecondary,
+    marginLeft: Spacing.sm,
+  },
+
+  // Blocage achat (rôles admin)
+  blockedNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    padding: Spacing.base,
+    borderRadius: BorderRadius.md,
+    backgroundColor: AppColors.surface,
+    borderWidth: 1,
+    borderColor: AppColors.borderLight,
+  },
+  blockedText: {
+    flex: 1,
+    fontSize: FontSizes.sm,
+    color: AppColors.textSecondary,
+    lineHeight: 18,
+  },
+  buySpots: {
+    fontSize: FontSizes.sm,
+    color: AppColors.textSecondary,
+    marginTop: Spacing.xs,
+  },
+  spotsLine: {
+    fontSize: FontSizes.xs,
+    fontWeight: '600',
+    color: AppColors.textSecondary,
+    marginTop: 2,
+  },
+
   // Hero
   heroImage: {
     width: '100%',
     height: 260,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  heroImageDesktop: {
+    height: 240,
+    position: 'relative',
+  },
+  heroBadgeWrap: {
+    position: 'absolute',
+    left: Spacing.xxl,
+    bottom: Spacing.lg,
   },
   heroOverlay: {
     position: 'absolute',
@@ -622,11 +789,7 @@ const styles = StyleSheet.create({
     paddingBottom: Spacing.xxl,
     borderTopWidth: 1,
     borderTopColor: AppColors.borderLight,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    elevation: 10,
+    boxShadow: '0px -4px 12px rgba(0, 0, 0, 0.06)',
   },
   bottomBarContent: {
     flexDirection: 'row',

@@ -55,7 +55,7 @@ export interface BdeMember {
   id: string;
   userId: string;
   isAdmin: boolean;
-  user: { id: string; displayName: string; profilePicture: string | null };
+  user: { id: string; displayName: string; email?: string; profilePicture: string | null };
 }
 
 export interface WithdrawalResult {
@@ -119,6 +119,34 @@ export interface AdminSummary {
   bdesCount: number;
   eventsCount: number;
   newsCount: number;
+}
+
+export interface AdminDashboard {
+  usersCount: number;
+  bdesCount: number;
+  activeBdesCount: number;
+  newsCount: number;
+  ticketsSold: number;
+  upcomingEventsCount: number;
+  pastEventsCount: number;
+  eventsCount: number;
+  usersByRole: { STUDENT: number; ADMIN_BDE: number; SUPER_ADMIN: number };
+  revenue: number;
+  recentUsers: {
+    id: string;
+    displayName: string;
+    email: string;
+    role: 'STUDENT' | 'ADMIN_BDE' | 'SUPER_ADMIN';
+    createdAt: string;
+  }[];
+  topBdes: {
+    id: string;
+    name: string;
+    logo: string | null;
+    balance: number;
+    memberCount: number;
+    eventCount: number;
+  }[];
 }
 
 export interface Ticket {

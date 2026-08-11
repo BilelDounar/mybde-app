@@ -9,17 +9,21 @@ import {
   StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { useAuth } from '@/context/AuthContext';
+import { api } from '@/services/api';
 import { Input } from '@/components/ui/Input';
 import { Button } from '@/components/ui/Button';
 import { PageTitle } from '@/components/PageTitle';
 import { AppColors, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
 
 export default function SignupScreen() {
-  const { signup, isLoading } = useAuth();
+  const { signup, refreshUser, isLoading } = useAuth();
+  // Code d'invitation optionnel transmis via le lien « Inviter par lien ».
+  const { code } = useLocalSearchParams<{ code?: string }>();
+  const inviteCode = typeof code === 'string' ? code.trim() : '';
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -51,7 +55,18 @@ export default function SignupScreen() {
     }
     try {
       await signup(name, email, password);
-      router.replace('/(tabs)');
+      // Lien d'invitation : on rattache directement le nouvel utilisateur au BDE.
+      if (inviteCode) {
+        try {
+          await api.joinBdeByCode(inviteCode);
+          await refreshUser();
+        } catch (e) {
+          console.error('Adhésion via code d\'invitation échouée:', e);
+        }
+      }
+      // Nouveau compte : on présente le guide de démarrage avant d'entrer dans
+      // l'app (la connexion, elle, va directement à l'accueil).
+      router.replace('/onboarding');
     } catch {
       setError('Inscription échouée. Veuillez réessayer.');
     }
@@ -78,6 +93,15 @@ export default function SignupScreen() {
           <Text style={styles.title}>Créer un compte</Text>
           <Text style={styles.subtitle}>Rejoignez la communauté MyBDE</Text>
 
+          {inviteCode ? (
+            <View style={styles.inviteBox}>
+              <Ionicons name="ticket-outline" size={18} color={AppColors.primary} />
+              <Text style={styles.inviteText}>
+                Invitation détectée : vous rejoindrez automatiquement le BDE après inscription.
+              </Text>
+            </View>
+          ) : null}
+
           {/* Error */}
           {error ? (
             <View style={styles.errorBox}>
@@ -89,7 +113,7 @@ export default function SignupScreen() {
           {/* Form */}
           <Input
             label="Nom complet"
-            placeholder="Nom et prénom"
+            placeholder="Bilel Dounar"
             value={name}
             onChangeText={setName}
             icon="person-outline"
@@ -234,6 +258,21 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: FontSizes.sm,
     color: AppColors.danger,
+    flex: 1,
+  },
+  inviteBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: AppColors.primaryLight,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    marginBottom: Spacing.base,
+  },
+  inviteText: {
+    fontSize: FontSizes.sm,
+    color: AppColors.primary,
     flex: 1,
   },
   checkList: {

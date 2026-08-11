@@ -137,11 +137,7 @@ const styles = StyleSheet.create({
     backgroundColor: AppColors.card,
     borderRadius: BorderRadius.lg,
     padding: Spacing.xl,
-    shadowColor: AppColors.black,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.18,
-    shadowRadius: 24,
-    elevation: 8,
+    boxShadow: '0px 8px 24px rgba(0, 0, 0, 0.18)',
   },
   title: {
     fontSize: FontSizes.md,

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -8,14 +8,16 @@ import {
   Share,
   Linking,
   Platform,
+  Modal,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
-import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { Input } from '@/components/ui/Input';
 import { PageTitle } from '@/components/PageTitle';
 import { JoinBdeBanner } from '@/components/JoinBdeBanner';
 import { AppColors, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
@@ -23,8 +25,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useDialog } from '@/context/DialogContext';
 import { useTransition } from '@/context/TransitionContext';
 import { useJoinBde } from '@/hooks/use-join-bde';
-import { api, testConnection } from '@/services/api';
-import type { Ticket } from '@/types';
+import { api } from '@/services/api';
 
 interface MenuItemProps {
   icon: keyof typeof Ionicons.glyphMap;
@@ -62,30 +63,63 @@ function MenuItem({ icon, label, subtitle, onPress, danger, badge }: MenuItemPro
 export default function ProfileScreen() {
   const { user, logout, updateProfile, refreshUser, isLoading } = useAuth();
   const bdeMembers = user?.bdeMembers ?? [];
+  // Seul un utilisateur classique achète des billets (crédits) et rejoint
+  // plusieurs BDE. Un admin BDE / super admin gère les données, sans crédits.
+  const isStudent = user?.role === 'student';
   const dialog = useDialog();
   const { markDirty } = useTransition();
-  const [apiConnected, setApiConnected] = useState<boolean | null>(null);
-  const [tickets, setTickets] = useState<Ticket[]>([]);
-  const showApiFlag = __DEV__ && user?.role === 'super_admin';
 
-  useEffect(() => {
-    if (showApiFlag) testConnection().then(setApiConnected);
-    api.getTickets().then(setTickets).catch((e) => console.error('Erreur billets profil:', e));
-  }, [showApiFlag]);
+  // ─── Modale d'édition du profil ────────────────────────────
+  const [editVisible, setEditVisible] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const emptyForm = {
+    displayName: '', email: '', phone: '', university: '', program: '', year: '', bio: '',
+  };
+  const [form, setForm] = useState(emptyForm);
+  const setField = (key: keyof typeof emptyForm) => (value: string) =>
+    setForm((prev) => ({ ...prev, [key]: value }));
 
-  const saveProfileField = async (
-    data: Parameters<typeof updateProfile>[0],
-    successMessage: string,
-  ) => {
+  const openEditModal = () => {
+    if (isLoading) return;
+    setForm({
+      displayName: user?.displayName ?? '',
+      email: user?.email ?? '',
+      phone: user?.phone ?? '',
+      university: user?.university ?? '',
+      program: user?.program ?? '',
+      year: user?.year != null ? String(user.year) : '',
+      bio: user?.bio ?? '',
+    });
+    setEditVisible(true);
+  };
+
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim());
+  const canSave = form.displayName.trim().length > 0 && emailValid && !saving;
+
+  const handleSaveProfile = async () => {
+    if (!canSave) return;
+    const yearNum = form.year.trim() ? parseInt(form.year.trim(), 10) : undefined;
+    setSaving(true);
     try {
-      await updateProfile(data);
+      await updateProfile({
+        displayName: form.displayName.trim(),
+        email: form.email.trim(),
+        phone: form.phone.trim() || undefined,
+        university: form.university.trim() || undefined,
+        program: form.program.trim() || undefined,
+        year: Number.isFinite(yearNum) ? yearNum : undefined,
+        bio: form.bio.trim() || undefined,
+      });
       markDirty();
-      dialog.alert({ title: 'Succès', message: successMessage });
+      setEditVisible(false);
+      dialog.alert({ title: 'Succès', message: 'Profil mis à jour.' });
     } catch (e) {
       dialog.alert({
         title: 'Erreur',
         message: e instanceof Error ? e.message : 'Impossible de mettre à jour',
       });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -174,79 +208,6 @@ export default function ProfileScreen() {
     });
   };
 
-  const handleUpdatePersonalInfo = () => {
-    if (isLoading) return;
-    dialog.choose({
-      title: 'Informations personnelles',
-      message: 'Que souhaitez-vous modifier ?',
-      choices: [
-        {
-          text: 'Modifier le téléphone',
-          onPress: () =>
-            dialog.prompt({
-              title: 'Numéro de téléphone',
-              message: 'Entrez votre numéro :',
-              placeholder: '06 12 34 56 78',
-              defaultValue: user?.phone ?? '',
-              keyboardType: 'phone-pad',
-              onSubmit: (phone) => {
-                if (phone.trim()) saveProfileField({ phone: phone.trim() }, 'Numéro mis à jour');
-              },
-            }),
-        },
-        {
-          text: 'Modifier la bio',
-          onPress: () =>
-            dialog.prompt({
-              title: 'Bio',
-              message: 'Décrivez-vous :',
-              placeholder: 'Votre bio',
-              defaultValue: user?.bio ?? '',
-              onSubmit: (bio) => {
-                if (bio.trim()) saveProfileField({ bio: bio.trim() }, 'Bio mise à jour');
-              },
-            }),
-        },
-      ],
-    });
-  };
-
-  const handleUpdateAcademicInfo = () => {
-    if (isLoading) return;
-    dialog.choose({
-      title: 'Infos académiques',
-      message: 'Que souhaitez-vous modifier ?',
-      choices: [
-        {
-          text: 'Modifier la formation',
-          onPress: () =>
-            dialog.prompt({
-              title: 'Formation',
-              message: 'Entrez votre formation :',
-              placeholder: 'Ex. Informatique',
-              defaultValue: user?.program ?? '',
-              onSubmit: (program) => {
-                if (program.trim()) saveProfileField({ program: program.trim() }, 'Formation mise à jour');
-              },
-            }),
-        },
-        {
-          text: "Modifier l'université",
-          onPress: () =>
-            dialog.prompt({
-              title: 'Université',
-              message: 'Entrez votre université :',
-              placeholder: 'Ex. Université Paris-Saclay',
-              defaultValue: user?.university ?? '',
-              onSubmit: (university) => {
-                if (university.trim()) saveProfileField({ university: university.trim() }, 'Université mise à jour');
-              },
-            }),
-        },
-      ],
-    });
-  };
-
   const handleLogout = () => {
     dialog.confirm({
       title: 'Déconnexion',
@@ -296,93 +257,66 @@ export default function ProfileScreen() {
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>Profil</Text>
-          {showApiFlag && (
-            <Pressable
-              onPress={() => testConnection().then(setApiConnected)}
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                backgroundColor: apiConnected === null ? AppColors.surface : apiConnected ? '#d1fae5' : '#fee2e2',
-                paddingHorizontal: 8,
-                paddingVertical: 4,
-                borderRadius: 12,
-              }}
-            >
-              <View style={{
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                backgroundColor: apiConnected === null ? AppColors.textLight : apiConnected ? '#10b981' : '#ef4444',
-                marginRight: 4,
-              }} />
-              <Text style={{
-                fontSize: 10,
-                color: apiConnected === null ? AppColors.textLight : apiConnected ? '#047857' : '#dc2626',
-                fontWeight: '600',
-              }}>
-                {apiConnected === null ? '...' : apiConnected ? 'API' : 'OFF'}
-              </Text>
-            </Pressable>
-          )}
         </View>
 
         {/* Profile Card */}
         <Card style={styles.profileCard}>
-          <View style={styles.profileRow}>
-            <Avatar name={user?.displayName ?? 'User'} size={64} />
-            <View style={styles.profileInfo}>
-              <Text style={styles.profileName}>{user?.displayName ?? 'User'}</Text>
-              <Text style={styles.profileEmail}>{user?.email ?? ''}</Text>
-              <View style={styles.profileBadge}>
-                <Ionicons name="school-outline" size={12} color={AppColors.primary} />
-                <Text style={styles.profileBadgeText}>
-                  {user?.program ?? 'Étudiant'} · Année {user?.year ?? '-'}
-                </Text>
-              </View>
-            </View>
+          <View style={styles.profileInfo}>
+            <Text style={styles.profileName}>{user?.displayName ?? 'User'}</Text>
+            <Text style={styles.profileEmail}>{user?.email ?? ''}</Text>
+            {!!user?.phone && <Text style={styles.profileMeta}>📞 {user.phone}</Text>}
+            {!!(user?.program || user?.university) && (
+              <Text style={styles.profileMeta}>
+                {[user?.program, user?.university].filter(Boolean).join(' · ')}
+              </Text>
+            )}
           </View>
-          <Pressable style={styles.editProfileBtn} onPress={handleUpdatePersonalInfo}>
+          <Pressable style={styles.editProfileBtn} onPress={openEditModal}>
+            <Ionicons name="create-outline" size={16} color={AppColors.primary} />
             <Text style={styles.editProfileText}>Modifier le profil</Text>
           </Pressable>
         </Card>
 
-        {/* Credits Card */}
-        <Card style={styles.creditsCard}>
-          <View style={styles.creditsRow}>
-            <View style={styles.creditsLeft}>
-              <View style={styles.creditsIcon}>
-                <Ionicons name="wallet" size={20} color={AppColors.white} />
+        {/* Credits Card — réservé aux étudiants (achat de billets) */}
+        {isStudent && (
+          <Card style={styles.creditsCard}>
+            <View style={styles.creditsRow}>
+              <View style={styles.creditsLeft}>
+                <View style={styles.creditsIcon}>
+                  <Ionicons name="wallet" size={20} color={AppColors.white} />
+                </View>
+                <View>
+                  <Text style={styles.creditsLabel}>CRÉDITS BDE</Text>
+                  <Text style={styles.creditsAmount}>
+                    {(user?.bdeCredits ?? 0).toFixed(2)}€
+                  </Text>
+                </View>
               </View>
-              <View>
-                <Text style={styles.creditsLabel}>CRÉDITS BDE</Text>
-                <Text style={styles.creditsAmount}>
-                  {(user?.bdeCredits ?? 0).toFixed(2)}€
-                </Text>
-              </View>
+              <Button
+                title="Recharger"
+                onPress={handleRecharge}
+                size="sm"
+                variant="secondary"
+                icon={<Ionicons name="add-circle-outline" size={16} color={AppColors.primary} />}
+              />
             </View>
-            <Button
-              title="Recharger"
-              onPress={handleRecharge}
-              size="sm"
-              variant="secondary"
-              icon={<Ionicons name="add-circle-outline" size={16} color={AppColors.primary} />}
-            />
-          </View>
-        </Card>
+          </Card>
+        )}
 
         {/* BDE rejoints */}
         {bdeMembers.length === 0 ? (
-          <JoinBdeBanner
-            title="Rejoins ton premier BDE"
-            message="Un BDE, c'est ton accès aux actus, événements et billets de ta communauté. Sans BDE rejoint, il n'y a rien à afficher !"
-          />
+          isStudent ? (
+            <JoinBdeBanner
+              title="Rejoins ton premier BDE"
+              message="Un BDE, c'est ton accès aux actus, événements et billets de ta communauté. Sans BDE rejoint, il n'y a rien à afficher !"
+            />
+          ) : null
         ) : (
           <>
             <Text style={styles.sectionLabel}>MES BDE</Text>
             <Card style={styles.menuCard} padding={0}>
               {bdeMembers.map((m) => (
                 <View key={m.bde.id} style={styles.bdeRow}>
-                  <Avatar name={m.bde.name} size={36} uri={m.bde.logo ?? undefined} />
                   <View style={styles.menuContent}>
                     <Text style={styles.menuLabel}>{m.bde.name}</Text>
                     {m.isAdmin && <Text style={styles.menuSubtitle}>Administrateur</Text>}
@@ -397,73 +331,36 @@ export default function ProfileScreen() {
                   )}
                 </View>
               ))}
-              <MenuItem
-                icon="add-circle-outline"
-                label="Rejoindre un autre BDE"
-                onPress={handleJoinBde}
-              />
+              {/* Seuls les étudiants peuvent rejoindre plusieurs BDE. */}
+              {isStudent && (
+                <MenuItem
+                  icon="add-circle-outline"
+                  label="Rejoindre un autre BDE"
+                  onPress={handleJoinBde}
+                />
+              )}
             </Card>
           </>
         )}
 
-        {/* Stats Row */}
-        {(() => {
-          const upcomingTickets = tickets.filter(t => t.status === 'valid').length;
-          const pastTickets = tickets.filter(t => t.status === 'used').length;
-          const bdeJoined = bdeMembers.length;
-          return (
-            <View style={styles.statsRow}>
-              <Pressable style={styles.statItem} onPress={() => router.push('/(tabs)/tickets')}>
-                <Text style={styles.statNumber}>{upcomingTickets}</Text>
-                <Text style={styles.statLabel}>À venir</Text>
-              </Pressable>
-              <View style={styles.statDivider} />
-              <Pressable style={styles.statItem} onPress={() => router.push('/(tabs)/tickets')}>
-                <Text style={styles.statNumber}>{pastTickets}</Text>
-                <Text style={styles.statLabel}>Passés</Text>
-              </Pressable>
-              <View style={styles.statDivider} />
-              <Pressable style={styles.statItem} onPress={() => router.push('/(tabs)/events')}>
-                <Text style={styles.statNumber}>{bdeJoined}</Text>
-                <Text style={styles.statLabel}>BDE</Text>
-              </Pressable>
-            </View>
-          );
-        })()}
-
         {/* Menu Sections */}
-        <Text style={styles.sectionLabel}>COMPTE</Text>
-        <Card style={styles.menuCard} padding={0}>
-          <MenuItem
-            icon="person-outline"
-            label="Informations personnelles"
-            subtitle={user?.phone ? `📞 ${user.phone}` : 'Nom, e-mail, téléphone'}
-            onPress={handleUpdatePersonalInfo}
-          />
-          <MenuItem
-            icon="school-outline"
-            label="Infos académiques"
-            subtitle={user?.university ? `${user.university}` : 'Université, formation'}
-            onPress={handleUpdateAcademicInfo}
-          />
-        </Card>
-
         <Text style={styles.sectionLabel}>AIDE</Text>
         <Card style={styles.menuCard} padding={0}>
           <MenuItem
             icon="help-circle-outline"
             label="Centre d'aide"
-            onPress={() => openLink('https://mybde.fr/help')}
+            onPress={() => router.push({ pathname: '/info/[topic]', params: { topic: 'help' } })}
           />
           <MenuItem
             icon="chatbubbles-outline"
             label="Nous contacter"
+            subtitle="support@mybde.fr"
             onPress={() => openLink('mailto:support@mybde.fr')}
           />
           <MenuItem
             icon="document-text-outline"
             label="Conditions générales"
-            onPress={() => openLink('https://mybde.fr/terms')}
+            onPress={() => router.push({ pathname: '/info/[topic]', params: { topic: 'terms' } })}
           />
           <MenuItem
             icon="share-outline"
@@ -503,6 +400,103 @@ export default function ProfileScreen() {
 
         <View style={{ height: Spacing.xxl }} />
       </ScrollView>
+
+      {/* Modale d'édition des informations personnelles */}
+      <Modal
+        visible={editVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}
+        >
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Modifier le profil</Text>
+              <Pressable onPress={() => setEditVisible(false)} hitSlop={8}>
+                <Ionicons name="close" size={24} color={AppColors.textSecondary} />
+              </Pressable>
+            </View>
+            <ScrollView
+              style={styles.modalScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Input
+                label="Nom complet"
+                placeholder="Bilel Dounar"
+                value={form.displayName}
+                onChangeText={setField('displayName')}
+                icon="person-outline"
+              />
+              <Input
+                label="E-mail"
+                placeholder="vous@universite.fr"
+                value={form.email}
+                onChangeText={setField('email')}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                icon="mail-outline"
+                error={form.email.length > 0 && !emailValid ? 'E-mail invalide' : undefined}
+              />
+              <Input
+                label="Téléphone"
+                placeholder="06 12 34 56 78"
+                value={form.phone}
+                onChangeText={setField('phone')}
+                keyboardType="phone-pad"
+                icon="call-outline"
+              />
+              <Input
+                label="Université"
+                placeholder="Université Paris-Saclay"
+                value={form.university}
+                onChangeText={setField('university')}
+                icon="school-outline"
+              />
+              <Input
+                label="Filière"
+                placeholder="Informatique"
+                value={form.program}
+                onChangeText={setField('program')}
+                icon="book-outline"
+              />
+              <Input
+                label="Année d'études"
+                placeholder="3"
+                value={form.year}
+                onChangeText={setField('year')}
+                keyboardType="numeric"
+                icon="calendar-outline"
+              />
+              <Input
+                label="Bio"
+                placeholder="Décrivez-vous en quelques mots"
+                value={form.bio}
+                onChangeText={setField('bio')}
+                icon="chatbox-ellipses-outline"
+              />
+            </ScrollView>
+            <View style={styles.modalActions}>
+              <Button
+                title="Annuler"
+                variant="outline"
+                onPress={() => setEditVisible(false)}
+                style={{ flex: 1 }}
+              />
+              <Button
+                title="Enregistrer"
+                onPress={handleSaveProfile}
+                loading={saving}
+                disabled={!canSave}
+                style={{ flex: 1 }}
+              />
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -533,14 +527,8 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.base,
     padding: Spacing.base,
   },
-  profileRow: {
-    flexDirection: 'row',
-    gap: Spacing.base,
-    marginBottom: Spacing.md,
-  },
   profileInfo: {
-    flex: 1,
-    justifyContent: 'center',
+    marginBottom: Spacing.md,
   },
   profileName: {
     fontSize: FontSizes.lg,
@@ -550,23 +538,56 @@ const styles = StyleSheet.create({
   profileEmail: {
     fontSize: FontSizes.sm,
     color: AppColors.textSecondary,
-    marginBottom: Spacing.xs,
+    marginTop: 2,
   },
-  profileBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-  },
-  profileBadgeText: {
-    fontSize: FontSizes.xs,
-    color: AppColors.primary,
-    fontWeight: '500',
+  profileMeta: {
+    fontSize: FontSizes.sm,
+    color: AppColors.textLight,
+    marginTop: 2,
   },
   editProfileBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.sm,
     backgroundColor: AppColors.primaryLight,
+  },
+
+  // Modale d'édition
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+  },
+  modalCard: {
+    backgroundColor: AppColors.background,
+    borderTopLeftRadius: BorderRadius.xl,
+    borderTopRightRadius: BorderRadius.xl,
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.xl,
+    maxHeight: '88%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.base,
+  },
+  modalTitle: {
+    fontSize: FontSizes.lg,
+    fontWeight: '700',
+    color: AppColors.text,
+  },
+  modalScroll: {
+    flexGrow: 0,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    marginTop: Spacing.base,
   },
   editProfileText: {
     fontSize: FontSizes.sm,
@@ -645,39 +666,6 @@ const styles = StyleSheet.create({
     fontSize: FontSizes.xs,
     fontWeight: '600',
     color: AppColors.danger,
-  },
-
-  // Stats
-  statsRow: {
-    flexDirection: 'row',
-    marginHorizontal: Spacing.xl,
-    marginBottom: Spacing.xl,
-    backgroundColor: AppColors.white,
-    borderRadius: BorderRadius.lg,
-    paddingVertical: Spacing.base,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  statItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statNumber: {
-    fontSize: FontSizes.xl,
-    fontWeight: '800',
-    color: AppColors.text,
-  },
-  statLabel: {
-    fontSize: FontSizes.xs,
-    color: AppColors.textSecondary,
-    marginTop: 2,
-  },
-  statDivider: {
-    width: 1,
-    backgroundColor: AppColors.borderLight,
   },
 
   // Sections

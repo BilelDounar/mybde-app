@@ -24,19 +24,16 @@ export function installGlobalFont() {
     const flattened = StyleSheet.flatten(element.props.style) ?? {};
     if (flattened.fontFamily) return element;
 
-    // Le style doit rester un objet : `element` est déjà l'élément hôte, et
-    // react-native-web transmet son `style` tel quel au DOM. Un tableau y ferait
-    // itérer React DOM sur les index ("0", "1"…) — d'où « Indexed property
-    // setter is not supported » et un écran blanc (visible sur les Text imbriqués,
-    // rendus en <span>).
+    // Important : renvoyer un style APLATI (objet), jamais un tableau. Sur
+    // react-native-web (React 19), `Text.render` renvoie déjà l'élément hôte
+    // (`<span>`), et lui repasser un tableau de styles fait planter React DOM
+    // (« Failed to set an indexed property [0] on CSSStyleDeclaration »), ce qui
+    // met en échec le rendu de tout Text — donc de toute l'application sur le web.
     return {
       ...element,
       props: {
         ...element.props,
-        style: StyleSheet.flatten([
-          { fontFamily: interForWeight(flattened.fontWeight) },
-          element.props.style,
-        ]),
+        style: { fontFamily: interForWeight(flattened.fontWeight), ...flattened },
       },
     };
   };

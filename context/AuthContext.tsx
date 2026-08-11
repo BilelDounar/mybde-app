@@ -164,6 +164,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const updatedData = await api.updateProfile({
         displayName: data.displayName,
+        email: data.email,
         phone: data.phone,
         bio: data.bio,
         profilePicture: data.profilePicture,

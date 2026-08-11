@@ -9,6 +9,7 @@ import type {
   AdminUser,
   EventParticipant,
   AdminSummary,
+  AdminDashboard,
 } from '@/types';
 import { clearSession, saveSession } from './storage';
 
@@ -195,10 +196,10 @@ interface ApiNews {
   id?: string;
   bdeName?: string;
   bdeAvatar?: string | null;
+  bdeLogo?: string | null;
   content?: string;
   image?: string | null;
   likesCount?: number;
-  commentsCount?: number;
   likedByUserIds?: string[];
   createdAt?: string;
 }
@@ -282,7 +283,7 @@ function mapNews(n: ApiNews, currentUserId: string | null): NewsPost {
   return {
     id: n._id ?? n.id ?? '',
     bdeName: n.bdeName ?? '',
-    bdeAvatar: n.bdeAvatar ?? null,
+    bdeAvatar: n.bdeLogo ?? n.bdeAvatar ?? null,
     content: n.content ?? '',
     image: n.image ?? null,
     likes: n.likesCount ?? 0,
@@ -420,14 +421,22 @@ export const api = {
     search?: string;
     status?: string;
     category?: string;
-  } = {}): Promise<Event[]> => {
+    bdeId?: string;
+    page?: number;
+    limit?: number;
+  } = {}): Promise<{ events: Event[]; total: number; page: number; limit: number }> => {
     const qs = new URLSearchParams();
     if (params.search) qs.set('search', params.search);
     if (params.status) qs.set('status', params.status);
     if (params.category) qs.set('category', params.category);
+    if (params.bdeId) qs.set('bdeId', params.bdeId);
+    if (params.page) qs.set('page', String(params.page));
+    if (params.limit) qs.set('limit', String(params.limit));
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    const data = await apiRequest<ApiEvent[]>(`/events/admin${suffix}`);
-    return data.map(mapEvent);
+    const data = await apiRequest<{ data: ApiEvent[]; total: number; page: number; limit: number }>(
+      `/events/admin${suffix}`,
+    );
+    return { events: data.data.map(mapEvent), total: data.total, page: data.page, limit: data.limit };
   },
 
   createEvent: async (data: EventInput): Promise<Event> => {
@@ -464,6 +473,18 @@ export const api = {
       user: { id: string; displayName: string; email: string; profilePicture?: string | null };
     }>>(`/events/${id}/attendees`),
 
+  setAttendeePresence: (eventId: string, ticketId: string, present: boolean) =>
+    apiRequest<{ id: string; status: string; user: { id: string; displayName: string } }>(
+      `/events/${eventId}/attendees/${ticketId}/presence`,
+      { method: 'PATCH', body: JSON.stringify({ present }) },
+    ),
+
+  removeAttendee: (eventId: string, ticketId: string) =>
+    apiRequest<{ message: string; refundedAmount: number }>(
+      `/events/${eventId}/attendees/${ticketId}`,
+      { method: 'DELETE' },
+    ),
+
   validateTicket: (id: string, qrCode: string) =>
     apiRequest<{
       id: string;
@@ -474,12 +495,17 @@ export const api = {
     }>(`/events/${id}/validate`, { method: 'POST', body: JSON.stringify({ qrCode }) }),
 
   // Administration des utilisateurs (super admin)
-  getUsers: (params: { search?: string; role?: string } = {}) => {
+  getUsers: async (params: { search?: string; role?: string; page?: number; limit?: number } = {}): Promise<{ users: AdminUser[]; total: number; page: number; limit: number }> => {
     const qs = new URLSearchParams();
     if (params.search) qs.set('search', params.search);
     if (params.role) qs.set('role', params.role);
+    if (params.page) qs.set('page', String(params.page));
+    if (params.limit) qs.set('limit', String(params.limit));
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
-    return apiRequest<AdminUser[]>(`/users${suffix}`);
+    const data = await apiRequest<{ data: AdminUser[]; total: number; page: number; limit: number }>(
+      `/users${suffix}`,
+    );
+    return { users: data.data, total: data.total, page: data.page, limit: data.limit };
   },
 
   setUserRole: (id: string, role: 'STUDENT' | 'ADMIN_BDE' | 'SUPER_ADMIN') =>
@@ -488,10 +514,23 @@ export const api = {
       body: JSON.stringify({ role }),
     }),
 
+  updateUser: (id: string, data: { displayName?: string; phone?: string; bio?: string; university?: string; program?: string; year?: number }) =>
+    apiRequest<AdminUser>(`/users/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    }),
+
+  deleteUser: (id: string) =>
+    apiRequest<{ message: string }>(`/users/${id}`, { method: 'DELETE' }),
+
+  getUser: (id: string) => apiRequest<AdminUser>(`/users/${id}`),
+
   assignUserToBde: (bdeId: string, userId: string) =>
     apiRequest<BdeMember>(`/bde/${bdeId}/members/${userId}`, { method: 'POST' }),
 
   getAdminSummary: () => apiRequest<AdminSummary>('/admin/summary'),
+
+  getAdminDashboard: () => apiRequest<AdminDashboard>('/admin/dashboard'),
 
   // Membres d'un BDE
   getBdeMembers: (bdeId: string) =>
@@ -536,6 +575,18 @@ export const api = {
   getBde: async (id: string): Promise<BDE> => {
     const data = await apiRequest<ApiBde>(`/bde/${id}`, {}, { auth: false });
     return mapBde(data);
+  },
+
+  // Édition des informations d'un BDE (admin du BDE ou super admin).
+  updateBde: async (
+    id: string,
+    data: { name?: string; description?: string; university?: string; logo?: string; status?: string },
+  ): Promise<BDE> => {
+    const res = await apiRequest<ApiBde>(`/bde/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data),
+    });
+    return mapBde(res);
   },
 
   joinBdeByCode: (code: string) =>

@@ -111,29 +111,36 @@ describe('auto-refresh sur 401', () => {
 });
 
 describe('api.getAdminEvents', () => {
-  it('construit la query de recherche et mappe les événements', async () => {
+  it('construit la query de recherche et mappe la réponse paginée', async () => {
     setAuthToken('tok');
     mockFetch.mockResolvedValueOnce(
-      jsonResponse([{ id: 'e1', bdeId: 'b1', title: 'Gala', status: 'DRAFT' }]),
+      jsonResponse({
+        data: [{ id: 'e1', bdeId: 'b1', title: 'Gala', status: 'DRAFT' }],
+        total: 1,
+        page: 1,
+        limit: 20,
+      }),
     );
 
-    const events = await api.getAdminEvents({ search: 'gala' });
+    const res = await api.getAdminEvents({ search: 'gala' });
 
     const [url] = mockFetch.mock.calls[0];
     expect(url).toBe('http://localhost:3000/events/admin?search=gala');
-    expect(events[0]).toMatchObject({ id: 'e1', status: 'draft' });
+    expect(res.total).toBe(1);
+    expect(res.events[0]).toMatchObject({ id: 'e1', status: 'draft' });
   });
 });
 
 describe('api.getUsers', () => {
-  it('passe search et role en query', async () => {
+  it('passe search et role en query et mappe la réponse paginée', async () => {
     setAuthToken('tok');
-    mockFetch.mockResolvedValueOnce(jsonResponse([]));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: [], total: 0, page: 1, limit: 20 }));
 
-    await api.getUsers({ search: 'bilel', role: 'STUDENT' });
+    const res = await api.getUsers({ search: 'bilel', role: 'STUDENT' });
 
     const [url] = mockFetch.mock.calls[0];
     expect(url).toBe('http://localhost:3000/users?search=bilel&role=STUDENT');
+    expect(res).toMatchObject({ users: [], total: 0 });
   });
 });
 

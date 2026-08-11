@@ -15,14 +15,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Redirect } from 'expo-router';
+import * as Linking from 'expo-linking';
 import { Ionicons } from '@expo/vector-icons';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Avatar } from '@/components/ui/Avatar';
 import { PageTitle } from '@/components/PageTitle';
+import { AttendeesManager } from '@/components/AttendeesManager';
 import { AppColors, BorderRadius, FontFamily, FontSizes, Spacing } from '@/constants/theme';
 import { EVENT_CATEGORIES } from '@/constants/eventCategories';
 import { useAuth } from '@/context/AuthContext';
@@ -31,10 +32,17 @@ import { useTransition } from '@/context/TransitionContext';
 import { api, type EventInput } from '@/services/api';
 import type { BDE, Event, BdeMember, AdminUser, NewsPost, AdminSummary } from '@/types';
 
-type Section = 'events' | 'members' | 'users' | 'treasury' | 'content';
+type Section = 'events' | 'members' | 'users' | 'treasury' | 'content' | 'infos';
 
 const CATEGORIES = EVENT_CATEGORIES.map((c) => ({ value: c.value.toUpperCase(), label: c.label }));
 const STATUSES = ['DRAFT', 'PUBLISHED'] as const;
+const PAGE_SIZE = 15;
+const USERS_PAGE_SIZE = 10;
+const UPCOMING_PREVIEW = 5;
+// Sous-onglets d'un BDE (vue « détail BDE »). L'administration globale des
+// comptes reste un onglet de 1er niveau distinct (super admin).
+const BDE_SUBTABS: Section[] = ['infos', 'events', 'members', 'content', 'treasury'];
+const BDE_STATUSES = ['ACTIVE', 'INACTIVE', 'SUSPENDED'] as const;
 const ROLES = ['STUDENT', 'ADMIN_BDE', 'SUPER_ADMIN'] as const;
 const ROLE_LABELS: Record<string, string> = {
   STUDENT: 'Étudiant',
@@ -84,19 +92,30 @@ export default function ManageScreen() {
   const isSuperAdmin = user?.role === 'super_admin';
   const isManager = user?.role === 'admin_bde' || user?.role === 'super_admin';
 
-  const sections: Section[] = isSuperAdmin
-    ? ['events', 'users', 'treasury', 'content']
-    : ['events', 'members', 'treasury', 'content'];
-
+  // Sous-onglet actif dans la vue détail d'un BDE (ou 'users' pour l'admin
+  // global des comptes). Un admin BDE arrive directement sur les événements.
   const [section, setSection] = useState<Section>('events');
+  // Super admin : navigation de 1er niveau — navigateur de BDE vs. comptes.
+  const [topNav, setTopNav] = useState<'bde' | 'users'>('bde');
+  const [bdeQuery, setBdeQuery] = useState('');
+  const [managedBde, setManagedBde] = useState<BDE | null>(null);
   const [managedBdes, setManagedBdes] = useState<BDE[]>([]);
   const [selectedBdeId, setSelectedBdeId] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   const [events, setEvents] = useState<Event[]>([]);
+  const [eventsTotal, setEventsTotal] = useState(0);
   const [members, setMembers] = useState<BdeMember[]>([]);
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [usersTotal, setUsersTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Événements en gestion : « voir plus » sur les à venir, accordéon replié sur les passés.
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+  const [showPastEvents, setShowPastEvents] = useState(false);
+  // Administration d'un utilisateur (super admin).
+  const [managedUser, setManagedUser] = useState<AdminUser | null>(null);
+  const [allBdes, setAllBdes] = useState<BDE[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [categoryFilter, setCategoryFilter] = useState<string>('');
@@ -109,22 +128,12 @@ export default function ManageScreen() {
 
   const [newsVisible, setNewsVisible] = useState(false);
   const [newsContent, setNewsContent] = useState('');
+  const [newsImage, setNewsImage] = useState('');
   const [news, setNews] = useState<NewsPost[]>([]);
   const [editingNewsId, setEditingNewsId] = useState<string | null>(null);
 
   const [attendeesVisible, setAttendeesVisible] = useState(false);
-  const [attendees, setAttendees] = useState<Array<{
-    id: string;
-    ticketNumber: string;
-    qrCode: string;
-    status: string;
-    ticketType: string;
-    seatInfo?: string | null;
-    purchasedAt: string;
-    user: { id: string; displayName: string; email: string; profilePicture?: string | null };
-  }>>([]);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [qrInput, setQrInput] = useState('');
 
   const selectedBde = useMemo(
     () => managedBdes.find((b) => b.id === selectedBdeId) ?? null,
@@ -139,7 +148,12 @@ export default function ManageScreen() {
       .getManagedBdes()
       .then((bdes) => {
         setManagedBdes(bdes);
-        if (bdes.length > 0) setSelectedBdeId((prev) => prev || bdes[0].id);
+        // Un admin BDE n'a qu'un seul BDE : on le sélectionne d'emblée pour
+        // arriver directement sur ses sous-onglets. Le super admin, lui, passe
+        // par le navigateur de BDE (aucune sélection par défaut).
+        if (!isSuperAdmin && bdes.length > 0) {
+          setSelectedBdeId((prev) => prev || bdes[0].id);
+        }
       })
       .catch((e) => console.error('Erreur BDE gérés:', e))
       .finally(() => setLoading(false));
@@ -148,13 +162,25 @@ export default function ManageScreen() {
   const loadSection = useCallback(async () => {
     try {
       if (section === 'events') {
-        setEvents(await api.getAdminEvents({
+        const res = await api.getAdminEvents({
           search: search.trim() || undefined,
           status: statusFilter || undefined,
           category: categoryFilter || undefined,
-        }));
+          bdeId: selectedBdeId || undefined,
+          page: 1,
+          limit: PAGE_SIZE,
+        });
+        setEvents(res.events);
+        setEventsTotal(res.total);
       } else if (section === 'users') {
-        setUsers(await api.getUsers({ search: search.trim() || undefined, role: roleFilter || undefined }));
+        const res = await api.getUsers({
+          search: search.trim() || undefined,
+          role: roleFilter || undefined,
+          page: 1,
+          limit: USERS_PAGE_SIZE,
+        });
+        setUsers(res.users);
+        setUsersTotal(res.total);
       } else if (section === 'members' && selectedBdeId) {
         setMembers(await api.getBdeMembers(selectedBdeId));
       } else if (section === 'content') {
@@ -169,10 +195,58 @@ export default function ManageScreen() {
     loadSection();
   }, [loadSection]);
 
+  // Chargement à la demande (pagination) pour les listes potentiellement longues.
+  const loadMore = async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    try {
+      if (section === 'events') {
+        const page = Math.floor(events.length / PAGE_SIZE) + 1;
+        const res = await api.getAdminEvents({
+          search: search.trim() || undefined,
+          status: statusFilter || undefined,
+          category: categoryFilter || undefined,
+          bdeId: selectedBdeId || undefined,
+          page,
+          limit: PAGE_SIZE,
+        });
+        setEvents((prev) => [...prev, ...res.events]);
+        setEventsTotal(res.total);
+      } else if (section === 'users') {
+        const page = Math.floor(users.length / USERS_PAGE_SIZE) + 1;
+        const res = await api.getUsers({
+          search: search.trim() || undefined,
+          role: roleFilter || undefined,
+          page,
+          limit: USERS_PAGE_SIZE,
+        });
+        setUsers((prev) => [...prev, ...res.users]);
+        setUsersTotal(res.total);
+      }
+    } catch (e) {
+      dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Chargement impossible' });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   useEffect(() => {
     if (!isSuperAdmin) return;
     api.getAdminSummary().then(setSummary).catch((e) => console.error('Erreur compteurs admin:', e));
+    api.getBdes().then(setAllBdes).catch((e) => console.error('Erreur liste BDE:', e));
   }, [isSuperAdmin]);
+
+  /** Recharge l'utilisateur en cours d'administration + la liste. */
+  const refreshManagedUser = async () => {
+    if (!managedUser) return;
+    try {
+      const fresh = await api.getUser(managedUser.id);
+      setManagedUser(fresh);
+    } catch (e) {
+      console.error('Erreur rafraîchissement utilisateur:', e);
+    }
+    await loadSection();
+  };
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -280,40 +354,12 @@ export default function ManageScreen() {
 
   const openAttendees = (ev: Event) => {
     setSelectedEventId(ev.id);
-    setQrInput('');
-    loadAttendees(ev.id);
     setAttendeesVisible(true);
   };
 
   const closeAttendees = () => {
     setAttendeesVisible(false);
     setSelectedEventId(null);
-    setAttendees([]);
-    setQrInput('');
-  };
-
-  const loadAttendees = async (eventId: string) => {
-    try {
-      setAttendees(await api.getEventAttendees(eventId));
-    } catch (e) {
-      dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Chargement impossible' });
-    }
-  };
-
-  const handleValidateQr = async (code?: string) => {
-    const qrCode = (code ?? qrInput).trim();
-    if (!selectedEventId || !qrCode) return;
-    try {
-      const ticket = await api.validateTicket(selectedEventId, qrCode);
-      setQrInput('');
-      await loadAttendees(selectedEventId);
-      dialog.alert({
-        title: 'Présence validée',
-        message: `Billet ${ticket.ticketNumber} — ${ticket.user.displayName}`,
-      });
-    } catch (e) {
-      dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Validation impossible' });
-    }
   };
 
   // ─── Membres / Utilisateurs ──────────────────────────────
@@ -343,49 +389,6 @@ export default function ManageScreen() {
     });
   };
 
-  const changeUserRole = (u: AdminUser) => {
-    if (u.id === user?.id) return;
-    dialog.choose({
-      title: 'Changer le rôle',
-      message: `${u.displayName} — rôle actuel : ${ROLE_LABELS[u.role.toUpperCase()]}`,
-      choices: (['STUDENT', 'ADMIN_BDE', 'SUPER_ADMIN'] as const).map((r) => ({
-        text: ROLE_LABELS[r],
-        onPress: async () => {
-          try {
-            await api.setUserRole(u.id, r);
-            markDirty();
-            await loadSection();
-          } catch (e) {
-            dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Action impossible' });
-          }
-        },
-      })),
-    });
-  };
-
-  const assignUserToBde = (u: AdminUser) => {
-    if (managedBdes.length === 0) {
-      dialog.alert({ title: 'Aucun BDE', message: 'Aucun BDE disponible à assigner.' });
-      return;
-    }
-    dialog.choose({
-      title: 'Assigner à un BDE',
-      message: `Choisissez le BDE auquel rattacher ${u.displayName}.`,
-      choices: managedBdes.map((b) => ({
-        text: b.name,
-        onPress: async () => {
-          try {
-            await api.assignUserToBde(b.id, u.id);
-            markDirty();
-            await loadSection();
-          } catch (e) {
-            dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Assignation impossible' });
-          }
-        },
-      })),
-    });
-  };
-
   // ─── Code d'invitation ─────────────────────────────────────
   const shareJoinCode = async () => {
     if (!selectedBde?.joinCode) return;
@@ -406,6 +409,41 @@ export default function ManageScreen() {
       await Share.share({ title: 'MyBDE', message });
     } catch {
       dialog.alert({ title: 'Erreur', message: 'Impossible de partager le code.' });
+    }
+  };
+
+  // Lien d'invitation : ouvre la page d'inscription avec le code pré-rempli.
+  // - Web : URL classique basée sur l'origine du site.
+  // - Natif : véritable deep link (scheme `mybdereactnative://`) qui ouvre
+  //   l'application directement sur l'inscription — Linking.createURL gère le
+  //   scheme correct (dev, standalone) au lieu d'un domaine mort.
+  const buildJoinLink = (code: string) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      return `${window.location.origin}/signup?code=${code}`;
+    }
+    return Linking.createURL('/signup', { queryParams: { code } });
+  };
+
+  const shareJoinLink = async () => {
+    if (!selectedBde?.joinCode) return;
+    const link = buildJoinLink(selectedBde.joinCode);
+    const message = `Rejoins ${selectedBde.name} sur MyBDE : ${link}`;
+    try {
+      if (Platform.OS === 'web') {
+        const nav = typeof navigator !== 'undefined' ? navigator : undefined;
+        if (nav?.share) {
+          await nav.share({ title: 'MyBDE', text: message, url: link });
+        } else if (nav?.clipboard) {
+          await nav.clipboard.writeText(link);
+          dialog.alert({ title: 'Lien copié', message: "Le lien d'invitation a été copié." });
+        } else {
+          dialog.alert({ title: "Lien d'invitation", message: link });
+        }
+        return;
+      }
+      await Share.share({ title: 'MyBDE', message });
+    } catch {
+      dialog.alert({ title: 'Erreur', message: "Impossible de partager le lien." });
     }
   };
 
@@ -474,12 +512,14 @@ export default function ManageScreen() {
   const openCreateNews = () => {
     setEditingNewsId(null);
     setNewsContent('');
+    setNewsImage('');
     setNewsVisible(true);
   };
 
   const openEditNews = (post: NewsPost) => {
     setEditingNewsId(post.id);
     setNewsContent(post.content);
+    setNewsImage(post.image ?? '');
     setNewsVisible(true);
   };
 
@@ -488,17 +528,19 @@ export default function ManageScreen() {
       dialog.alert({ title: 'Contenu vide', message: 'Écrivez le contenu de l\'actualité.' });
       return;
     }
+    const image = newsImage.trim() || undefined;
     try {
       if (editingNewsId) {
-        await api.updateNews(editingNewsId, { content: newsContent.trim() });
+        await api.updateNews(editingNewsId, { content: newsContent.trim(), image });
       } else {
         if (!selectedBdeId) {
           dialog.alert({ title: 'BDE requis', message: 'Sélectionnez un BDE.' });
           return;
         }
-        await api.createNews({ bdeId: selectedBdeId, content: newsContent.trim() });
+        await api.createNews({ bdeId: selectedBdeId, content: newsContent.trim(), image });
       }
       setNewsContent('');
+      setNewsImage('');
       setEditingNewsId(null);
       setNewsVisible(false);
       markDirty();
@@ -524,6 +566,46 @@ export default function ManageScreen() {
         }
       },
     });
+  };
+
+  // ─── Navigation BDE-centrée ──────────────────────────────
+  // Super admin : navigateur de BDE (liste + recherche) → détail d'un BDE
+  // (sous-onglets), ou administration globale des comptes. Admin BDE : détail
+  // direct de son unique BDE.
+  const showGlobalUsers = isSuperAdmin && topNav === 'users';
+  const showBrowser = isSuperAdmin && topNav === 'bde' && !selectedBdeId;
+  const inBdeDetail = !isSuperAdmin || (topNav === 'bde' && !!selectedBdeId);
+  const bdeSearchTerm = bdeQuery.trim().toLowerCase();
+  const filteredBdes = managedBdes.filter(
+    (b) =>
+      !bdeSearchTerm ||
+      b.name.toLowerCase().includes(bdeSearchTerm) ||
+      (b.university ?? '').toLowerCase().includes(bdeSearchTerm),
+  );
+
+  const openBde = (id: string) => {
+    setSelectedBdeId(id);
+    setSection('infos');
+    setSearch('');
+    setStatusFilter('');
+    setCategoryFilter('');
+  };
+  const backToBrowser = () => {
+    setSelectedBdeId('');
+    setBdeQuery('');
+  };
+  const goTopNav = (nav: 'bde' | 'users') => {
+    setTopNav(nav);
+    setSearch('');
+    if (nav === 'users') setSection('users');
+    else setSection(selectedBdeId ? 'infos' : 'events');
+  };
+
+  const openBdeEditor = () => {
+    if (selectedBde) setManagedBde(selectedBde);
+  };
+  const onBdeUpdated = (updated: BDE) => {
+    setManagedBdes((prev) => prev.map((b) => (b.id === updated.id ? { ...b, ...updated } : b)));
   };
 
   // Garde d'accès : seuls les rôles admin peuvent atteindre cet écran (ex. URL directe sur web).
@@ -561,40 +643,93 @@ export default function ManageScreen() {
           </View>
         )}
 
-        {/* Sélecteur de BDE (si plusieurs gérés) */}
-        {managedBdes.length > 1 && section !== 'events' && section !== 'users' && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bdeRow}>
-            {managedBdes.map((b) => (
-              <Pressable
-                key={b.id}
-                onPress={() => setSelectedBdeId(b.id)}
-                style={[styles.bdeChip, selectedBdeId === b.id && styles.bdeChipActive]}
-              >
-                <Text style={[styles.bdeChipText, selectedBdeId === b.id && styles.bdeChipTextActive]}>
-                  {b.name}
-                </Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+        {/* Navigation 1er niveau (super admin) : BDE vs. comptes globaux */}
+        {isSuperAdmin && (
+          <View style={styles.tabs}>
+            <Pressable onPress={() => goTopNav('bde')} style={[styles.tab, topNav === 'bde' && styles.tabActive]}>
+              <Text style={[styles.tabText, topNav === 'bde' && styles.tabTextActive]}>BDE</Text>
+            </Pressable>
+            <Pressable onPress={() => goTopNav('users')} style={[styles.tab, topNav === 'users' && styles.tabActive]}>
+              <Text style={[styles.tabText, topNav === 'users' && styles.tabTextActive]}>Utilisateurs</Text>
+            </Pressable>
+          </View>
         )}
 
-        {/* Onglets de section */}
-        <View style={styles.tabs}>
-          {sections.map((s) => (
-            <Pressable
-              key={s}
-              onPress={() => setSection(s)}
-              style={[styles.tab, section === s && styles.tabActive]}
-            >
-              <Text style={[styles.tabText, section === s && styles.tabTextActive]}>
-                {sectionLabel(s)}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+        {/* Navigateur de BDE (super admin) : dropdown/recherche pour cibler un BDE */}
+        {showBrowser && (
+          <>
+            <View style={styles.searchBox}>
+              <Ionicons name="search" size={18} color={AppColors.textLight} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Rechercher un BDE (nom, université)…"
+                placeholderTextColor={AppColors.textLight}
+                value={bdeQuery}
+                onChangeText={setBdeQuery}
+              />
+              {bdeQuery.length > 0 && (
+                <Pressable onPress={() => setBdeQuery('')}>
+                  <Ionicons name="close-circle" size={18} color={AppColors.textLight} />
+                </Pressable>
+              )}
+            </View>
+            {filteredBdes.length === 0 ? (
+              <Empty label="Aucun BDE" />
+            ) : (
+              filteredBdes.map((b) => (
+                <Card key={b.id} variant="outlined" style={styles.itemCard}>
+                  <View style={styles.itemHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.itemTitle}>{b.name}</Text>
+                      <Text style={styles.itemMeta}>{b.university || '—'}</Text>
+                      <Text style={styles.itemMeta}>
+                        {b.memberCount} membre{b.memberCount > 1 ? 's' : ''} · {b.eventCount ?? 0} événement{(b.eventCount ?? 0) > 1 ? 's' : ''}
+                      </Text>
+                    </View>
+                    <Badge
+                      label={b.status === 'active' ? 'Actif' : b.status === 'suspended' ? 'Suspendu' : 'Inactif'}
+                      variant={b.status === 'active' ? 'success' : 'neutral'}
+                    />
+                  </View>
+                  <View style={styles.itemActions}>
+                    <Button title="Gérer" variant="outline" size="sm" onPress={() => openBde(b.id)} />
+                  </View>
+                </Card>
+              ))
+            )}
+          </>
+        )}
+
+        {/* En-tête détail BDE + sous-onglets */}
+        {inBdeDetail && selectedBde && (
+          <>
+            <View style={styles.detailHeader}>
+              {isSuperAdmin && (
+                <Pressable onPress={backToBrowser} style={styles.backLink} hitSlop={8}>
+                  <Ionicons name="chevron-back" size={18} color={AppColors.primary} />
+                  <Text style={styles.backLinkText}>Tous les BDE</Text>
+                </Pressable>
+              )}
+              <Text style={styles.detailBdeName}>{selectedBde.name}</Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bdeRow}>
+              {BDE_SUBTABS.map((s) => (
+                <Pressable
+                  key={s}
+                  onPress={() => { setSection(s); setSearch(''); }}
+                  style={[styles.bdeChip, section === s && styles.bdeChipActive]}
+                >
+                  <Text style={[styles.bdeChipText, section === s && styles.bdeChipTextActive]}>
+                    {sectionLabel(s)}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </>
+        )}
 
         {/* Recherche (événements / utilisateurs / actus) */}
-        {(section === 'events' || section === 'users' || section === 'content') && (
+        {!showBrowser && (section === 'events' || section === 'users' || section === 'content') && (
           <View style={styles.searchBox}>
             <Ionicons name="search" size={18} color={AppColors.textLight} />
             <TextInput
@@ -616,46 +751,76 @@ export default function ManageScreen() {
           </View>
         )}
 
-        {/* Filtres catégorie / statut (événements) */}
-        {section === 'events' && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
-            <Pressable onPress={() => setStatusFilter('')} style={[styles.filterChip, !statusFilter && styles.filterChipActive]}>
-              <Text style={[styles.filterChipText, !statusFilter && styles.filterChipTextActive]}>Tous statuts</Text>
-            </Pressable>
-            {STATUSES.map((s) => (
-              <Pressable key={s} onPress={() => setStatusFilter(s)} style={[styles.filterChip, statusFilter === s && styles.filterChipActive]}>
-                <Text style={[styles.filterChipText, statusFilter === s && styles.filterChipTextActive]}>
-                  {s === 'DRAFT' ? 'Brouillon' : 'Publié'}
-                </Text>
-              </Pressable>
-            ))}
-            <Pressable onPress={() => setCategoryFilter('')} style={[styles.filterChip, !categoryFilter && styles.filterChipActive]}>
-              <Text style={[styles.filterChipText, !categoryFilter && styles.filterChipTextActive]}>Toutes catégories</Text>
-            </Pressable>
-            {CATEGORIES.map((c) => (
-              <Pressable key={c.value} onPress={() => setCategoryFilter(c.value)} style={[styles.filterChip, categoryFilter === c.value && styles.filterChipActive]}>
-                <Text style={[styles.filterChipText, categoryFilter === c.value && styles.filterChipTextActive]}>{c.label}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+        {/* Filtres catégorie / statut (événements) — menus déroulants */}
+        {inBdeDetail && section === 'events' && (
+          <View style={styles.selectRow}>
+            <SelectField
+              label="Statut"
+              value={statusFilter}
+              onSelect={setStatusFilter}
+              dialog={dialog}
+              options={[
+                { value: '', label: 'Tous statuts' },
+                ...STATUSES.map((s) => ({ value: s, label: s === 'DRAFT' ? 'Brouillon' : 'Publié' })),
+              ]}
+            />
+            <SelectField
+              label="Catégorie"
+              value={categoryFilter}
+              onSelect={setCategoryFilter}
+              dialog={dialog}
+              options={[{ value: '', label: 'Toutes catégories' }, ...CATEGORIES]}
+            />
+          </View>
         )}
 
-        {/* Filtre rôle (utilisateurs) */}
-        {section === 'users' && (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow}>
-            <Pressable onPress={() => setRoleFilter('')} style={[styles.filterChip, !roleFilter && styles.filterChipActive]}>
-              <Text style={[styles.filterChipText, !roleFilter && styles.filterChipTextActive]}>Tous rôles</Text>
-            </Pressable>
-            {ROLES.map((r) => (
-              <Pressable key={r} onPress={() => setRoleFilter(r)} style={[styles.filterChip, roleFilter === r && styles.filterChipActive]}>
-                <Text style={[styles.filterChipText, roleFilter === r && styles.filterChipTextActive]}>{ROLE_LABELS[r]}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+        {/* Filtre rôle (utilisateurs) — menu déroulant */}
+        {showGlobalUsers && (
+          <View style={styles.selectRow}>
+            <SelectField
+              label="Rôle"
+              value={roleFilter}
+              onSelect={setRoleFilter}
+              dialog={dialog}
+              options={[
+                { value: '', label: 'Tous rôles' },
+                ...ROLES.map((r) => ({ value: r, label: ROLE_LABELS[r] })),
+              ]}
+            />
+          </View>
+        )}
+
+        {/* ─── INFOS DU BDE ─── */}
+        {inBdeDetail && section === 'infos' && selectedBde && (
+          <>
+            <Card variant="outlined" style={styles.itemCard}>
+              <Text style={styles.itemTitle}>{selectedBde.name}</Text>
+              <Text style={styles.itemMeta}>{selectedBde.university || 'Université non renseignée'}</Text>
+              <Text style={[styles.itemMeta, { marginTop: Spacing.sm }]}>
+                {selectedBde.description || 'Aucune description.'}
+              </Text>
+              <View style={[styles.itemHeader, { marginTop: Spacing.md }]}>
+                <Badge
+                  label={selectedBde.status === 'active' ? 'Actif' : selectedBde.status === 'suspended' ? 'Suspendu' : 'Inactif'}
+                  variant={selectedBde.status === 'active' ? 'success' : 'neutral'}
+                />
+                <Text style={styles.itemMeta}>
+                  {selectedBde.memberCount} membre{selectedBde.memberCount > 1 ? 's' : ''} · {selectedBde.eventCount ?? 0} événement{(selectedBde.eventCount ?? 0) > 1 ? 's' : ''}
+                </Text>
+              </View>
+            </Card>
+            <Button
+              title="Modifier les informations"
+              variant="outline"
+              onPress={openBdeEditor}
+              icon={<Ionicons name="create-outline" size={18} color={AppColors.primary} />}
+              style={styles.cta}
+            />
+          </>
         )}
 
         {/* ─── ÉVÉNEMENTS ─── */}
-        {section === 'events' && (
+        {inBdeDetail && section === 'events' && (
           <>
             <Button title="Créer un événement" onPress={openCreate} icon={<Ionicons name="add" size={18} color={AppColors.white} />} style={styles.cta} />
             {events.length === 0 ? (
@@ -664,8 +829,8 @@ export default function ManageScreen() {
               <>
                 {upcomingEvents.length > 0 && (
                   <>
-                    <Text style={styles.sectionLabel}>ÉVÉNEMENTS À VENIR</Text>
-                    {upcomingEvents.map((ev) => (
+                    <Text style={styles.sectionLabel}>ÉVÉNEMENTS À VENIR ({upcomingEvents.length})</Text>
+                    {(showAllUpcoming ? upcomingEvents : upcomingEvents.slice(0, UPCOMING_PREVIEW)).map((ev) => (
                       <Card key={ev.id} variant="outlined" style={styles.itemCard}>
                         <View style={styles.itemHeader}>
                           <View style={{ flex: 1 }}>
@@ -686,13 +851,32 @@ export default function ManageScreen() {
                         </View>
                       </Card>
                     ))}
+                    {!showAllUpcoming && upcomingEvents.length > UPCOMING_PREVIEW && (
+                      <Button
+                        title={`Voir plus (${upcomingEvents.length - UPCOMING_PREVIEW})`}
+                        variant="outline"
+                        size="sm"
+                        onPress={() => setShowAllUpcoming(true)}
+                        style={{ marginBottom: Spacing.sm }}
+                      />
+                    )}
                   </>
                 )}
 
                 {pastEvents.length > 0 && (
                   <>
-                    <Text style={[styles.sectionLabel, { marginTop: Spacing.lg }]}>ÉVÉNEMENTS PASSÉS</Text>
-                    {pastEvents.map((ev) => (
+                    <Pressable
+                      style={styles.accordionHeader}
+                      onPress={() => setShowPastEvents((v) => !v)}
+                    >
+                      <Text style={styles.accordionTitle}>Événements passés ({pastEvents.length})</Text>
+                      <Ionicons
+                        name={showPastEvents ? 'chevron-up' : 'chevron-down'}
+                        size={20}
+                        color={AppColors.textSecondary}
+                      />
+                    </Pressable>
+                    {showPastEvents && pastEvents.map((ev) => (
                       <Card key={ev.id} variant="outlined" style={[styles.itemCard, { opacity: 0.7 }]}>
                         <View style={styles.itemHeader}>
                           <View style={{ flex: 1 }}>
@@ -716,52 +900,65 @@ export default function ManageScreen() {
           </>
         )}
 
-        {/* ─── MEMBRES (admin BDE) ─── */}
-        {section === 'members' && (
+        {inBdeDetail && section === 'events' && events.length < eventsTotal && (
+          <Button
+            title={`Charger plus (${events.length}/${eventsTotal})`}
+            variant="outline"
+            onPress={loadMore}
+            loading={loadingMore}
+            style={{ marginTop: Spacing.sm }}
+          />
+        )}
+
+        {/* ─── UTILISATEURS DU BDE (membres) ─── */}
+        {inBdeDetail && section === 'members' && (
           <>
-            {selectedBde?.joinCode && (
-              <Card style={styles.joinCodeCard}>
-                <Text style={styles.treasuryLabel}>Code d&apos;invitation</Text>
-                <Text style={styles.joinCodeValue}>{selectedBde.joinCode}</Text>
-                <Text style={styles.treasuryHint}>
-                  Partagez ce code à 6 chiffres pour laisser un étudiant rejoindre {selectedBde.name}.
-                </Text>
-                <View style={styles.joinCodeActions}>
-                  <Button title="Partager" size="sm" onPress={shareJoinCode} style={{ flex: 1 }} />
-                  <Button title="Régénérer" variant="outline" size="sm" onPress={regenerateJoinCode} style={{ flex: 1 }} />
-                </View>
-              </Card>
-            )}
             {members.length === 0 ? (
               <Empty label="Aucun membre" />
             ) : (
-              members.map((m) => (
-                <Card key={m.id} variant="outlined" style={styles.itemCard}>
-                  <View style={styles.itemHeader}>
-                    <Avatar name={m.user.displayName} uri={m.user.profilePicture} size={40} />
-                    <View style={{ flex: 1, marginLeft: Spacing.md }}>
-                      <Text style={styles.itemTitle}>{m.user.displayName}</Text>
-                      <Text style={styles.itemMeta}>{m.isAdmin ? 'Administrateur' : 'Membre'}</Text>
+              members.map((m) => {
+                const isSelf = m.userId === user?.id;
+                const otherAdmins = members.filter((x) => x.isAdmin && x.userId !== user?.id).length;
+                // On ne peut pas se retirer soi-même tant qu'on est le dernier admin.
+                const canRemoveSelf = !isSelf || otherAdmins > 0;
+                return (
+                  <Card key={m.id} variant="outlined" style={styles.itemCard}>
+                    <View style={styles.itemHeader}>
+                      <Avatar name={m.user.displayName} uri={m.user.profilePicture} size={40} />
+                      <View style={{ flex: 1, marginLeft: Spacing.md }}>
+                        <Text style={styles.itemTitle}>{m.user.displayName}{isSelf ? ' (vous)' : ''}</Text>
+                        {m.user.email && <Text style={styles.itemMeta}>{m.user.email}</Text>}
+                        <Text style={styles.itemMeta}>{m.isAdmin ? 'Administrateur' : 'Membre'}</Text>
+                      </View>
+                      {m.isAdmin && <Badge label="Admin" variant="primary" />}
                     </View>
-                    {m.isAdmin && <Badge label="Admin" variant="primary" />}
-                  </View>
-                  <View style={styles.itemActions}>
-                    <Button
-                      title={m.isAdmin ? 'Retirer admin' : 'Promouvoir admin'}
-                      variant="outline"
-                      size="sm"
-                      onPress={() => toggleMemberAdmin(m)}
-                    />
-                    <Button title="Retirer" variant="danger" size="sm" onPress={() => removeMember(m)} />
-                  </View>
-                </Card>
-              ))
+                    <View style={styles.itemActions}>
+                      {/* Un admin BDE ne peut pas modifier son propre rôle. */}
+                      {!isSelf && (
+                        <Button
+                          title={m.isAdmin ? 'Retirer admin' : 'Promouvoir admin'}
+                          variant="outline"
+                          size="sm"
+                          onPress={() => toggleMemberAdmin(m)}
+                        />
+                      )}
+                      <Button
+                        title={isSelf ? 'Me retirer' : 'Retirer'}
+                        variant="danger"
+                        size="sm"
+                        disabled={!canRemoveSelf}
+                        onPress={() => removeMember(m)}
+                      />
+                    </View>
+                  </Card>
+                );
+              })
             )}
           </>
         )}
 
-        {/* ─── UTILISATEURS (super admin) ─── */}
-        {section === 'users' && (
+        {/* ─── UTILISATEURS (admin global des comptes, super admin) ─── */}
+        {showGlobalUsers && (
           users.length === 0 ? (
             <Empty label="Aucun utilisateur" />
           ) : (
@@ -784,34 +981,59 @@ export default function ManageScreen() {
                   />
                 </View>
                 <View style={styles.itemActions}>
-                  {u.id !== user?.id && (
-                    <Button title="Changer le rôle" variant="outline" size="sm" onPress={() => changeUserRole(u)} />
-                  )}
-                  <Button title="Assigner à un BDE" variant="outline" size="sm" onPress={() => assignUserToBde(u)} />
+                  <Button title="Gérer" variant="outline" size="sm" onPress={() => setManagedUser(u)} />
                 </View>
               </Card>
             ))
           )
         )}
 
-        {/* ─── TRÉSORERIE ─── */}
-        {section === 'treasury' && (
+        {showGlobalUsers && users.length < usersTotal && (
+          <Button
+            title={`Charger plus (${users.length}/${usersTotal})`}
+            variant="outline"
+            onPress={loadMore}
+            loading={loadingMore}
+            style={{ marginTop: Spacing.sm }}
+          />
+        )}
+
+        {/* ─── TRÉSORERIE + CODE D'INVITATION ─── */}
+        {inBdeDetail && section === 'treasury' && (
           selectedBde ? (
-            <Card style={styles.treasuryCard}>
-              <Text style={styles.treasuryLabel}>Solde de {selectedBde.name}</Text>
-              <Text style={styles.treasuryAmount}>{(selectedBde.balance ?? 0).toFixed(2)} €</Text>
-              <Text style={styles.treasuryHint}>
-                Issu des ventes de billets. Retraits par paliers de 20 €, commission MyBDE de 5 %.
-              </Text>
-              <Button title="Retirer des fonds" onPress={withdraw} style={{ marginTop: Spacing.base }} fullWidth />
-            </Card>
+            <>
+              <Card style={styles.treasuryCard}>
+                <Text style={styles.treasuryLabel}>Solde de {selectedBde.name}</Text>
+                <Text style={styles.treasuryAmount}>{(selectedBde.balance ?? 0).toFixed(2)} €</Text>
+                <Text style={styles.treasuryHint}>
+                  Issu des ventes de billets. Retraits par paliers de 20 €, commission MyBDE de 5 %.
+                </Text>
+                <Button title="Retirer des fonds" onPress={withdraw} style={{ marginTop: Spacing.base }} fullWidth />
+              </Card>
+              {selectedBde.joinCode && (
+                <Card style={styles.joinCodeCard}>
+                  <Text style={styles.treasuryLabel}>Code d&apos;invitation</Text>
+                  <Text style={styles.joinCodeValue}>{selectedBde.joinCode}</Text>
+                  <Text style={styles.treasuryHint}>
+                    Partagez ce code à 6 chiffres pour laisser un étudiant rejoindre {selectedBde.name}.
+                  </Text>
+                  <View style={styles.joinCodeActions}>
+                    <Button title="Partager le code" size="sm" onPress={shareJoinCode} style={{ flex: 1 }} />
+                    <Button title="Inviter par lien" variant="secondary" size="sm" onPress={shareJoinLink} style={{ flex: 1 }} />
+                  </View>
+                  <View style={[styles.joinCodeActions, { marginTop: Spacing.sm }]}>
+                    <Button title="Régénérer le code" variant="outline" size="sm" onPress={regenerateJoinCode} style={{ flex: 1 }} />
+                  </View>
+                </Card>
+              )}
+            </>
           ) : (
             <Empty label="Aucun BDE à gérer" />
           )
         )}
 
         {/* ─── CONTENU (actus) ─── */}
-        {section === 'content' && (
+        {inBdeDetail && section === 'content' && (
           <>
             <Button
               title="Publier une actualité"
@@ -846,13 +1068,14 @@ export default function ManageScreen() {
         )}
       </ScrollView>
 
-      {/* Modale formulaire événement */}
+      {/* Modale formulaire événement — dans la vue détail, le BDE est imposé
+          (celui sélectionné), donc on masque le sélecteur en ne passant que lui. */}
       <EventFormModal
         visible={formVisible}
         form={form}
         setForm={setForm}
         saving={saving}
-        managedBdes={managedBdes}
+        managedBdes={selectedBde ? [selectedBde] : managedBdes}
         onClose={() => setFormVisible(false)}
         onSubmit={submitForm}
       />
@@ -862,6 +1085,9 @@ export default function ManageScreen() {
         visible={newsVisible}
         content={newsContent}
         setContent={setNewsContent}
+        image={newsImage}
+        setImage={setNewsImage}
+        bdeName={selectedBde?.name ?? managedBdes.find((b) => b.id === selectedBdeId)?.name ?? ''}
         editingId={editingNewsId}
         onClose={() => setNewsVisible(false)}
         onSubmit={submitNews}
@@ -870,12 +1096,29 @@ export default function ManageScreen() {
       {/* Modale participants / validation QR */}
       <AttendeesModal
         visible={attendeesVisible}
-        attendees={attendees}
-        qrInput={qrInput}
-        setQrInput={setQrInput}
+        eventId={selectedEventId}
         onClose={closeAttendees}
-        onValidate={handleValidateQr}
+        onChanged={markDirty}
         dialog={dialog}
+      />
+
+      {/* Modale d'administration d'un utilisateur (super admin) */}
+      <UserAdminModal
+        user={managedUser}
+        currentUserId={user?.id ?? null}
+        allBdes={allBdes}
+        dialog={dialog}
+        onRefresh={async () => { markDirty(); await refreshManagedUser(); }}
+        onClose={() => setManagedUser(null)}
+        onDeleted={async () => { markDirty(); setManagedUser(null); await loadSection(); }}
+      />
+
+      {/* Modale d'édition des informations d'un BDE (admin du BDE / super admin) */}
+      <BdeAdminModal
+        bde={managedBde}
+        dialog={dialog}
+        onUpdated={(updated) => { markDirty(); onBdeUpdated(updated); }}
+        onClose={() => setManagedBde(null)}
       />
     </SafeAreaView>
   );
@@ -883,8 +1126,9 @@ export default function ManageScreen() {
 
 function sectionLabel(s: Section): string {
   switch (s) {
+    case 'infos': return 'Infos';
     case 'events': return 'Événements';
-    case 'members': return 'Membres';
+    case 'members': return 'Utilisateurs';
     case 'users': return 'Utilisateurs';
     case 'treasury': return 'Trésorerie';
     case 'content': return 'Contenu';
@@ -897,6 +1141,38 @@ function StatCard({ label, value }: { label: string; value: number }) {
       <Text style={styles.statValue}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </View>
+  );
+}
+
+interface SelectFieldProps {
+  label: string;
+  value: string;
+  options: { value: string; label: string }[];
+  onSelect: (value: string) => void;
+  dialog: ReturnType<typeof useDialog>;
+}
+
+/**
+ * Sélecteur déroulant compact (remplace les rangées de chips). Cross-platform :
+ * s'appuie sur dialog.choose pour présenter les options en liste, ce qui
+ * fonctionne aussi bien sur mobile que sur web.
+ */
+function SelectField({ label, value, options, onSelect, dialog }: SelectFieldProps) {
+  const current = options.find((o) => o.value === value) ?? options[0];
+  const open = () => {
+    dialog.choose({
+      title: label,
+      choices: options.map((o) => ({ text: o.label, onPress: () => onSelect(o.value) })),
+    });
+  };
+  return (
+    <Pressable style={styles.select} onPress={open}>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.selectLabel}>{label}</Text>
+        <Text style={styles.selectValue} numberOfLines={1}>{current?.label}</Text>
+      </View>
+      <Ionicons name="chevron-down" size={16} color={AppColors.textSecondary} />
+    </Pressable>
   );
 }
 
@@ -1078,39 +1354,92 @@ interface NewsModalProps {
   visible: boolean;
   content: string;
   setContent: (v: string) => void;
+  image: string;
+  setImage: (v: string) => void;
+  bdeName: string;
   editingId: string | null;
   onClose: () => void;
   onSubmit: () => void;
 }
 
-function NewsModal({ visible, content, setContent, editingId, onClose, onSubmit }: NewsModalProps) {
-  const { width, height } = useWindowDimensions();
+const NEWS_MAX_LENGTH = 500;
+
+function NewsModal({ visible, content, setContent, image, setImage, bdeName, editingId, onClose, onSubmit }: NewsModalProps) {
+  const { width } = useWindowDimensions();
   const isDesktop = width >= 600;
-  const cardHeight = isDesktop ? Math.min(420, Math.round(height * 0.6)) : height;
-  const cardWidth = isDesktop ? Math.min(560, Math.round(width * 0.9)) : width;
+  // Modale compacte : hauteur automatique (au contenu) sur desktop, plein écran
+  // sur mobile. Plus besoin d'une grande carte à moitié vide.
+  const cardWidth = isDesktop ? Math.min(520, Math.round(width * 0.9)) : width;
   const isEditing = !!editingId;
+  const remaining = NEWS_MAX_LENGTH - content.length;
 
   return (
     <Modal visible={visible} animationType={isDesktop ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
       <View style={[StyleSheet.absoluteFill, styles.modalOverlay, isDesktop && styles.modalOverlayDesktop]}>
-        <View style={[styles.modalCard, { height: cardHeight, width: cardWidth }, isDesktop && styles.modalCardDesktop]}>
+        <View
+          style={[
+            styles.modalCard,
+            isDesktop ? { width: cardWidth } : StyleSheet.absoluteFillObject,
+            isDesktop && styles.modalCardDesktop,
+          ]}
+        >
           <View style={styles.modalHeader}>
             <Text style={styles.modalTitle}>{isEditing ? 'Modifier l\'actualité' : 'Nouvelle actualité'}</Text>
             <Pressable onPress={onClose}>
               <Ionicons name="close" size={24} color={AppColors.text} />
             </Pressable>
           </View>
-          <View style={{ flex: 1 }}>
-            <Field
-              label="Contenu"
+
+          {/* BDE cible : contexte clair de publication */}
+          {!!bdeName && !isEditing && (
+            <View style={styles.newsTarget}>
+              <Ionicons name="megaphone-outline" size={16} color={AppColors.primary} />
+              <Text style={styles.newsTargetText}>Publication pour {bdeName}</Text>
+            </View>
+          )}
+
+          <View style={styles.newsFieldWrap}>
+            <TextInput
+              style={[styles.field, styles.newsTextarea]}
               value={content}
-              onChange={setContent}
-              multiline
+              onChangeText={(v) => setContent(v.slice(0, NEWS_MAX_LENGTH))}
               placeholder="Quoi de neuf au BDE ?"
+              placeholderTextColor={AppColors.textLight}
+              multiline
+              autoFocus={isDesktop}
+              maxLength={NEWS_MAX_LENGTH}
             />
+            <Text style={[styles.newsCounter, remaining <= 40 && { color: AppColors.danger }]}>
+              {remaining}
+            </Text>
           </View>
+
+          <View style={styles.newsImageRow}>
+            <Ionicons name="image-outline" size={18} color={AppColors.textLight} />
+            <TextInput
+              style={styles.newsImageInput}
+              value={image}
+              onChangeText={setImage}
+              placeholder="Lien d'une image (optionnel)"
+              placeholderTextColor={AppColors.textLight}
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            {image.length > 0 && (
+              <Pressable onPress={() => setImage('')}>
+                <Ionicons name="close-circle" size={18} color={AppColors.textLight} />
+              </Pressable>
+            )}
+          </View>
+
           <View style={styles.modalFooter}>
-            <Button title={isEditing ? 'Enregistrer' : 'Publier'} onPress={onSubmit} fullWidth size="lg" />
+            <Button
+              title={isEditing ? 'Enregistrer' : 'Publier'}
+              onPress={onSubmit}
+              disabled={!content.trim()}
+              fullWidth
+              size="lg"
+            />
           </View>
         </View>
       </View>
@@ -1118,63 +1447,19 @@ function NewsModal({ visible, content, setContent, editingId, onClose, onSubmit 
   );
 }
 
-interface Attendee {
-  id: string;
-  ticketNumber: string;
-  qrCode: string;
-  status: string;
-  ticketType: string;
-  seatInfo?: string | null;
-  purchasedAt: string;
-  user: { id: string; displayName: string; email: string; profilePicture?: string | null };
-}
-
 interface AttendeesModalProps {
   visible: boolean;
-  attendees: Attendee[];
-  qrInput: string;
-  setQrInput: (v: string) => void;
+  eventId: string | null;
   onClose: () => void;
-  onValidate: (code?: string) => void;
+  onChanged?: () => void;
   dialog: ReturnType<typeof useDialog>;
 }
 
-function AttendeesModal({ visible, attendees, qrInput, setQrInput, onClose, onValidate, dialog }: AttendeesModalProps) {
+function AttendeesModal({ visible, eventId, onClose, onChanged, dialog }: AttendeesModalProps) {
   const { width, height } = useWindowDimensions();
   const isDesktop = width >= 600;
   const cardHeight = isDesktop ? Math.min(720, Math.round(height * 0.9)) : height;
   const cardWidth = isDesktop ? Math.min(640, Math.round(width * 0.9)) : width;
-  const [scanning, setScanning] = useState(false);
-  const [permission, requestPermission] = useCameraPermissions();
-  const isWeb = Platform.OS === 'web';
-
-  useEffect(() => {
-    if (!visible) setScanning(false);
-  }, [visible]);
-  const validCount = attendees.filter((a) => ['valid', 'used'].includes(a.status.toLowerCase())).length;
-  const usedCount = attendees.filter((a) => a.status.toLowerCase() === 'used').length;
-
-  const handleScanPress = async () => {
-    if (isWeb) {
-      dialog.alert({ title: 'Scanner indisponible', message: 'La caméra n\'est pas disponible sur le web. Saisissez le code manuellement.' });
-      return;
-    }
-    if (!permission?.granted) {
-      const result = await requestPermission();
-      if (!result.granted) {
-        dialog.alert({ title: 'Permission requise', message: 'Autorisez l\'accès à la caméra pour scanner les QR codes.' });
-        return;
-      }
-    }
-    setScanning(true);
-  };
-
-  const handleBarcode = ({ data }: { data: string }) => {
-    if (!data || scanning === false) return;
-    setScanning(false);
-    setQrInput(data);
-    onValidate(data);
-  };
 
   return (
     <Modal visible={visible} animationType={isDesktop ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
@@ -1186,65 +1471,289 @@ function AttendeesModal({ visible, attendees, qrInput, setQrInput, onClose, onVa
               <Ionicons name="close" size={24} color={AppColors.text} />
             </Pressable>
           </View>
+          {visible && eventId && (
+            <AttendeesManager eventId={eventId} dialog={dialog} onChanged={onChanged} />
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
 
-          <View style={{ flex: 1 }}>
-            <Text style={styles.attendeesStats}>
-              {attendees.length} inscrit{attendees.length > 1 ? 's' : ''} · {usedCount}/{validCount} présence{validCount > 1 ? 's' : ''} validée{validCount > 1 ? 's' : ''}
-            </Text>
+interface UserAdminModalProps {
+  user: AdminUser | null;
+  currentUserId: string | null;
+  allBdes: BDE[];
+  dialog: ReturnType<typeof useDialog>;
+  onRefresh: () => Promise<void> | void;
+  onClose: () => void;
+  onDeleted: () => Promise<void> | void;
+}
 
-            <View style={styles.qrInputRow}>
-              <TextInput
-                style={styles.qrInput}
-                placeholder="Saisir le code QR du billet..."
-                placeholderTextColor={AppColors.textLight}
-                value={qrInput}
-                onChangeText={setQrInput}
-                onSubmitEditing={() => onValidate()}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <Button title="" icon={<Ionicons name="barcode-outline" size={24} color={AppColors.white} />} onPress={handleScanPress} size="md" />
-              <Button title="Valider" onPress={() => onValidate()} size="md" />
-            </View>
+/**
+ * Administration complète d'un utilisateur par le super admin : informations,
+ * rôle global (Étudiant ↔ Super Admin), adhésions BDE (assigner, retirer, rôle
+ * dans le BDE) et suppression du compte.
+ */
+function UserAdminModal({ user: u, currentUserId, allBdes, dialog, onRefresh, onClose, onDeleted }: UserAdminModalProps) {
+  const { width, height } = useWindowDimensions();
+  const isDesktop = width >= 600;
+  const cardHeight = isDesktop ? Math.min(720, Math.round(height * 0.9)) : height;
+  const cardWidth = isDesktop ? Math.min(560, Math.round(width * 0.9)) : width;
+  const isSelf = !!u && u.id === currentUserId;
 
-            {scanning && (
-              <View style={styles.cameraWrap}>
-                <CameraView
-                  style={styles.camera}
-                  barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-                  onBarcodeScanned={handleBarcode}
-                >
-                  <View style={styles.cameraOverlay}>
-                    <View style={styles.cameraTarget} />
-                  </View>
-                </CameraView>
-                <Button title="Annuler le scan" onPress={() => setScanning(false)} size="sm" variant="outline" fullWidth style={{ marginTop: Spacing.sm }} />
+  const run = async (fn: () => Promise<unknown>, errMsg: string) => {
+    try {
+      await fn();
+      await onRefresh();
+    } catch (e) {
+      dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : errMsg });
+    }
+  };
+
+  const editInfo = () => {
+    if (!u) return;
+    dialog.choose({
+      title: 'Modifier les informations',
+      choices: [
+        {
+          text: 'Nom affiché',
+          onPress: () => dialog.prompt({
+            title: 'Nom affiché', defaultValue: u.displayName,
+            onSubmit: (v) => { if (v.trim()) run(() => api.updateUser(u.id, { displayName: v.trim() }), 'Mise à jour impossible'); },
+          }),
+        },
+        {
+          text: 'Téléphone',
+          onPress: () => dialog.prompt({
+            title: 'Téléphone', placeholder: '06 12 34 56 78', keyboardType: 'phone-pad',
+            onSubmit: (v) => run(() => api.updateUser(u.id, { phone: v.trim() }), 'Mise à jour impossible'),
+          }),
+        },
+        {
+          text: 'Bio',
+          onPress: () => dialog.prompt({
+            title: 'Bio', placeholder: 'Quelques mots…',
+            onSubmit: (v) => run(() => api.updateUser(u.id, { bio: v.trim() }), 'Mise à jour impossible'),
+          }),
+        },
+      ],
+    });
+  };
+
+  const changeRole = () => {
+    if (!u) return;
+    dialog.choose({
+      title: 'Rôle global',
+      message: `Actuel : ${ROLE_LABELS[u.role.toUpperCase()] ?? u.role}. Le statut Admin BDE s'obtient en promouvant l'utilisateur dans un BDE.`,
+      choices: [
+        { text: 'Étudiant', onPress: () => run(() => api.setUserRole(u.id, 'STUDENT'), 'Action impossible') },
+        { text: 'Super Admin', onPress: () => run(() => api.setUserRole(u.id, 'SUPER_ADMIN'), 'Action impossible') },
+      ],
+    });
+  };
+
+  const assignBde = () => {
+    if (!u) return;
+    const joinedIds = new Set((u.bdeMembers ?? []).map((m) => m.bde.id));
+    const available = allBdes.filter((b) => !joinedIds.has(b.id));
+    if (available.length === 0) {
+      dialog.alert({ title: 'Aucun BDE', message: 'Cet utilisateur est déjà membre de tous les BDE.' });
+      return;
+    }
+    dialog.choose({
+      title: 'Assigner à un BDE',
+      choices: available.map((b) => ({
+        text: b.name,
+        onPress: () => run(() => api.assignUserToBde(b.id, u.id), 'Assignation impossible'),
+      })),
+    });
+  };
+
+  const toggleBdeRole = (bdeId: string, isAdmin: boolean) => {
+    if (!u) return;
+    run(() => api.setMemberAdmin(bdeId, u.id, !isAdmin), 'Action impossible');
+  };
+
+  const removeFromBde = (bdeId: string, bdeName: string) => {
+    if (!u) return;
+    dialog.confirm({
+      title: 'Retirer du BDE',
+      message: `${u.displayName} sera retiré de ${bdeName}.`,
+      confirmText: 'Retirer',
+      destructive: true,
+      onConfirm: () => run(() => api.removeMember(bdeId, u.id), 'Action impossible'),
+    });
+  };
+
+  const deleteAccount = () => {
+    if (!u) return;
+    dialog.confirm({
+      title: 'Supprimer le compte',
+      message: `Le compte de ${u.displayName} sera définitivement supprimé.`,
+      confirmText: 'Supprimer',
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          await api.deleteUser(u.id);
+          await onDeleted();
+        } catch (e) {
+          dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Suppression impossible' });
+        }
+      },
+    });
+  };
+
+  return (
+    <Modal visible={!!u} animationType={isDesktop ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
+      <View style={[StyleSheet.absoluteFill, styles.modalOverlay, isDesktop && styles.modalOverlayDesktop]}>
+        <View style={[styles.modalCard, { height: cardHeight, width: cardWidth }, isDesktop && styles.modalCardDesktop]}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Gérer l&apos;utilisateur</Text>
+            <Pressable onPress={onClose}>
+              <Ionicons name="close" size={24} color={AppColors.text} />
+            </Pressable>
+          </View>
+          {u && (
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: Spacing.lg }} showsVerticalScrollIndicator={false}>
+              <View style={styles.itemHeader}>
+                <Avatar name={u.displayName} uri={u.profilePicture} size={48} />
+                <View style={{ flex: 1, marginLeft: Spacing.md }}>
+                  <Text style={styles.itemTitle}>{u.displayName}{isSelf ? ' (vous)' : ''}</Text>
+                  <Text style={styles.itemMeta}>{u.email}</Text>
+                </View>
+                <Badge
+                  label={ROLE_LABELS[u.role.toUpperCase()] ?? u.role}
+                  variant={u.role === 'super_admin' ? 'primary' : u.role === 'admin_bde' ? 'info' : 'neutral'}
+                />
               </View>
-            )}
 
-            <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
-              {attendees.length === 0 ? (
-                <Text style={styles.emptyText}>Aucun participant inscrit</Text>
+              <Text style={styles.sectionLabel}>INFORMATIONS</Text>
+              <Button title="Modifier les informations" variant="outline" size="sm" onPress={editInfo} style={{ alignSelf: 'flex-start' }} />
+
+              {!isSelf && (
+                <>
+                  <Text style={styles.sectionLabel}>RÔLE GLOBAL</Text>
+                  <Button title="Changer le rôle" variant="outline" size="sm" onPress={changeRole} style={{ alignSelf: 'flex-start' }} />
+                </>
+              )}
+
+              <Text style={styles.sectionLabel}>BDE ({(u.bdeMembers ?? []).length})</Text>
+              {(u.bdeMembers ?? []).length === 0 ? (
+                <Text style={styles.itemMeta}>Aucun BDE</Text>
               ) : (
-                attendees.map((a) => (
-                  <Card key={a.id} variant="outlined" style={styles.attendeeCard}>
+                (u.bdeMembers ?? []).map((m) => (
+                  <Card key={m.bde.id} variant="outlined" style={styles.itemCard}>
                     <View style={styles.itemHeader}>
-                      <Avatar name={a.user.displayName} uri={a.user.profilePicture} size={40} />
-                      <View style={{ flex: 1, marginLeft: Spacing.md }}>
-                        <Text style={styles.itemTitle}>{a.user.displayName}</Text>
-                        <Text style={styles.itemMeta}>{a.user.email} · N° {a.ticketNumber}</Text>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.itemTitle}>{m.bde.name}</Text>
+                        <Text style={styles.itemMeta}>{m.isAdmin ? 'Administrateur' : 'Membre'}</Text>
                       </View>
-                      <Badge
-                        label={a.status.toLowerCase() === 'used' ? 'Présent' : a.status.toLowerCase() === 'valid' ? 'Inscrit' : a.status}
-                        variant={a.status.toLowerCase() === 'used' ? 'success' : a.status.toLowerCase() === 'valid' ? 'info' : 'neutral'}
+                      {m.isAdmin && <Badge label="Admin" variant="primary" size="sm" />}
+                    </View>
+                    <View style={styles.itemActions}>
+                      <Button
+                        title={m.isAdmin ? 'Rétrograder membre' : 'Promouvoir admin'}
+                        variant="outline"
                         size="sm"
+                        onPress={() => toggleBdeRole(m.bde.id, m.isAdmin)}
                       />
+                      <Button title="Retirer" variant="danger" size="sm" onPress={() => removeFromBde(m.bde.id, m.bde.name)} />
                     </View>
                   </Card>
                 ))
               )}
+              <Button title="Assigner à un BDE" variant="secondary" size="sm" onPress={assignBde} style={{ alignSelf: 'flex-start', marginTop: Spacing.sm }} />
+
+              {!isSelf && (
+                <>
+                  <Text style={styles.sectionLabel}>ZONE DANGEREUSE</Text>
+                  <Button title="Supprimer le compte" variant="danger" size="sm" onPress={deleteAccount} style={{ alignSelf: 'flex-start' }} />
+                </>
+              )}
             </ScrollView>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+interface BdeAdminModalProps {
+  bde: BDE | null;
+  dialog: ReturnType<typeof useDialog>;
+  onUpdated: (updated: BDE) => void;
+  onClose: () => void;
+}
+
+/**
+ * Édition des informations d'un BDE (nom, université, description, statut) par
+ * un admin du BDE ou le super admin — sur le modèle de l'administration d'un
+ * utilisateur (UserAdminModal).
+ */
+function BdeAdminModal({ bde, dialog, onUpdated, onClose }: BdeAdminModalProps) {
+  const { width, height } = useWindowDimensions();
+  const isDesktop = width >= 600;
+  const cardHeight = isDesktop ? Math.min(560, Math.round(height * 0.9)) : height;
+  const cardWidth = isDesktop ? Math.min(540, Math.round(width * 0.9)) : width;
+
+  const save = async (data: Parameters<typeof api.updateBde>[1], errMsg: string) => {
+    if (!bde) return;
+    try {
+      const updated = await api.updateBde(bde.id, data);
+      onUpdated(updated);
+    } catch (e) {
+      dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : errMsg });
+    }
+  };
+
+  const editName = () => bde && dialog.prompt({
+    title: 'Nom du BDE', defaultValue: bde.name,
+    onSubmit: (v) => { if (v.trim()) save({ name: v.trim() }, 'Mise à jour impossible'); },
+  });
+  const editUniversity = () => bde && dialog.prompt({
+    title: 'Université', defaultValue: bde.university,
+    onSubmit: (v) => { if (v.trim()) save({ university: v.trim() }, 'Mise à jour impossible'); },
+  });
+  const editDescription = () => bde && dialog.prompt({
+    title: 'Description', defaultValue: bde.description, placeholder: 'Décrivez le BDE…',
+    onSubmit: (v) => save({ description: v.trim() }, 'Mise à jour impossible'),
+  });
+  const changeStatus = () => bde && dialog.choose({
+    title: 'Statut du BDE',
+    choices: BDE_STATUSES.map((s) => ({
+      text: s === 'ACTIVE' ? 'Actif' : s === 'SUSPENDED' ? 'Suspendu' : 'Inactif',
+      onPress: () => save({ status: s }, 'Action impossible'),
+    })),
+  });
+
+  return (
+    <Modal visible={!!bde} animationType={isDesktop ? 'fade' : 'slide'} transparent onRequestClose={onClose}>
+      <View style={[StyleSheet.absoluteFill, styles.modalOverlay, isDesktop && styles.modalOverlayDesktop]}>
+        <View style={[styles.modalCard, { height: cardHeight, width: cardWidth }, isDesktop && styles.modalCardDesktop]}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>Modifier le BDE</Text>
+            <Pressable onPress={onClose}>
+              <Ionicons name="close" size={24} color={AppColors.text} />
+            </Pressable>
           </View>
+          {bde && (
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: Spacing.lg }} showsVerticalScrollIndicator={false}>
+              <Text style={styles.itemTitle}>{bde.name}</Text>
+              <Text style={styles.itemMeta}>{bde.university}</Text>
+              {!!bde.description && <Text style={[styles.itemMeta, { marginTop: Spacing.sm }]}>{bde.description}</Text>}
+
+              <Text style={styles.sectionLabel}>INFORMATIONS</Text>
+              <View style={styles.itemActions}>
+                <Button title="Nom" variant="outline" size="sm" onPress={editName} />
+                <Button title="Université" variant="outline" size="sm" onPress={editUniversity} />
+                <Button title="Description" variant="outline" size="sm" onPress={editDescription} />
+              </View>
+
+              <Text style={styles.sectionLabel}>STATUT</Text>
+              <Button title="Changer le statut" variant="outline" size="sm" onPress={changeStatus} style={{ alignSelf: 'flex-start' }} />
+            </ScrollView>
+          )}
         </View>
       </View>
     </Modal>
@@ -1254,7 +1763,7 @@ function AttendeesModal({ visible, attendees, qrInput, setQrInput, onClose, onVa
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: AppColors.surface },
   centered: { alignItems: 'center', justifyContent: 'center' },
-  content: { padding: Spacing.base, paddingBottom: Spacing.xxxl, maxWidth: 720, width: '100%', alignSelf: 'center' },
+  content: { padding: Spacing.base, paddingBottom: Spacing.xxxl },
   title: { fontFamily: FontFamily.display, fontSize: FontSizes.xxl, color: AppColors.text },
   subtitle: { fontFamily: FontFamily.body, fontSize: FontSizes.sm, color: AppColors.textSecondary, marginBottom: Spacing.base },
   statsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: Spacing.sm, marginBottom: Spacing.base },
@@ -1262,6 +1771,22 @@ const styles = StyleSheet.create({
   statValue: { fontFamily: FontFamily.display, fontSize: FontSizes.xl, color: AppColors.primary },
   statLabel: { fontFamily: FontFamily.body, fontSize: FontSizes.xs, color: AppColors.textSecondary, marginTop: 2 },
   filterRow: { marginBottom: Spacing.base },
+  selectRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.base },
+  select: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    backgroundColor: AppColors.white,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: AppColors.border,
+    paddingHorizontal: Spacing.base,
+    paddingVertical: Spacing.sm,
+    minHeight: 48,
+  },
+  selectLabel: { fontFamily: FontFamily.body, fontSize: FontSizes.xs, color: AppColors.textLight },
+  selectValue: { fontFamily: FontFamily.bodyMedium, fontSize: FontSizes.sm, color: AppColors.text, marginTop: 1 },
   filterChip: { paddingHorizontal: Spacing.base, paddingVertical: Spacing.sm, borderRadius: BorderRadius.full, backgroundColor: AppColors.white, borderWidth: 1, borderColor: AppColors.border, marginRight: Spacing.sm },
   filterChipActive: { backgroundColor: AppColors.primary, borderColor: AppColors.primary },
   filterChipText: { fontFamily: FontFamily.bodyMedium, fontSize: FontSizes.xs, color: AppColors.textSecondary },
@@ -1271,6 +1796,10 @@ const styles = StyleSheet.create({
   bdeChipActive: { backgroundColor: AppColors.primary, borderColor: AppColors.primary },
   bdeChipText: { fontFamily: FontFamily.bodyMedium, fontSize: FontSizes.sm, color: AppColors.textSecondary },
   bdeChipTextActive: { color: AppColors.white },
+  detailHeader: { marginBottom: Spacing.sm },
+  backLink: { flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: Spacing.xs, alignSelf: 'flex-start' },
+  backLinkText: { fontFamily: FontFamily.bodyMedium, fontSize: FontSizes.sm, color: AppColors.primary },
+  detailBdeName: { fontFamily: FontFamily.display, fontSize: FontSizes.xl, color: AppColors.text },
   tabs: { flexDirection: 'row', backgroundColor: AppColors.white, borderRadius: BorderRadius.md, padding: 4, marginBottom: Spacing.base },
   tab: { flex: 1, paddingVertical: Spacing.sm, borderRadius: BorderRadius.sm, alignItems: 'center' },
   tabActive: { backgroundColor: AppColors.primaryLight },
@@ -1299,6 +1828,13 @@ const styles = StyleSheet.create({
   joinCodeActions: { flexDirection: 'row', gap: Spacing.sm, marginTop: Spacing.base, width: '100%' },
   contentHint: { fontFamily: FontFamily.body, fontSize: FontSizes.sm, color: AppColors.textSecondary },
   newsContent: { fontFamily: FontFamily.body, fontSize: FontSizes.base, color: AppColors.text, marginTop: Spacing.sm, lineHeight: 22 },
+  newsTarget: { flexDirection: 'row', alignItems: 'center', gap: Spacing.xs, backgroundColor: AppColors.primaryLight, borderRadius: BorderRadius.sm, paddingHorizontal: Spacing.sm, paddingVertical: Spacing.xs, alignSelf: 'flex-start', marginBottom: Spacing.md },
+  newsTargetText: { fontFamily: FontFamily.bodyMedium, fontSize: FontSizes.xs, color: AppColors.primary },
+  newsFieldWrap: { position: 'relative', marginBottom: Spacing.md },
+  newsTextarea: { minHeight: 120, maxHeight: 220, textAlignVertical: 'top', paddingBottom: Spacing.lg },
+  newsCounter: { position: 'absolute', right: Spacing.sm, bottom: Spacing.sm, fontFamily: FontFamily.body, fontSize: FontSizes.xs, color: AppColors.textLight },
+  newsImageRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.sm, backgroundColor: AppColors.surface, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: AppColors.border, paddingHorizontal: Spacing.base, height: 44, marginBottom: Spacing.base },
+  newsImageInput: { flex: 1, fontFamily: FontFamily.body, fontSize: FontSizes.base, color: AppColors.text },
   empty: { alignItems: 'center', paddingVertical: Spacing.xxl, gap: Spacing.sm },
   emptyText: { fontFamily: FontFamily.body, fontSize: FontSizes.base, color: AppColors.textLight },
   modalOverlay: { backgroundColor: AppColors.overlay, justifyContent: 'flex-end' },
@@ -1318,6 +1854,8 @@ const styles = StyleSheet.create({
   chipText: { fontFamily: FontFamily.bodyMedium, fontSize: FontSizes.xs, color: AppColors.textSecondary },
   chipTextActive: { color: AppColors.white },
   sectionLabel: { fontFamily: FontFamily.bodyMedium, fontSize: FontSizes.xs, color: AppColors.textLight, letterSpacing: 1, marginBottom: Spacing.sm, marginTop: Spacing.sm },
+  accordionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: AppColors.white, borderRadius: BorderRadius.md, borderWidth: 1, borderColor: AppColors.border, paddingHorizontal: Spacing.base, paddingVertical: Spacing.md, marginTop: Spacing.lg, marginBottom: Spacing.sm },
+  accordionTitle: { fontFamily: FontFamily.bodySemibold, fontSize: FontSizes.sm, color: AppColors.text },
   attendeesStats: { fontFamily: FontFamily.body, fontSize: FontSizes.sm, color: AppColors.textSecondary, marginBottom: Spacing.base },
   qrInputRow: { flexDirection: 'row', gap: Spacing.sm, marginBottom: Spacing.base },
   qrInput: { flex: 1, backgroundColor: AppColors.surface, borderRadius: BorderRadius.md, paddingHorizontal: Spacing.base, paddingVertical: Spacing.md, fontFamily: FontFamily.body, fontSize: FontSizes.base, color: AppColors.text, borderWidth: 1, borderColor: AppColors.border },
