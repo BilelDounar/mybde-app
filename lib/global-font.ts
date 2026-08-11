@@ -24,11 +24,19 @@ export function installGlobalFont() {
     const flattened = StyleSheet.flatten(element.props.style) ?? {};
     if (flattened.fontFamily) return element;
 
+    // Le style doit rester un objet : `element` est déjà l'élément hôte, et
+    // react-native-web transmet son `style` tel quel au DOM. Un tableau y ferait
+    // itérer React DOM sur les index ("0", "1"…) — d'où « Indexed property
+    // setter is not supported » et un écran blanc (visible sur les Text imbriqués,
+    // rendus en <span>).
     return {
       ...element,
       props: {
         ...element.props,
-        style: [{ fontFamily: interForWeight(flattened.fontWeight) }, element.props.style],
+        style: StyleSheet.flatten([
+          { fontFamily: interForWeight(flattened.fontWeight) },
+          element.props.style,
+        ]),
       },
     };
   };
