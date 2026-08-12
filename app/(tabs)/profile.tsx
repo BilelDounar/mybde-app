@@ -426,7 +426,7 @@ export default function ProfileScreen() {
             >
               <Input
                 label="Nom complet"
-                placeholder="Bilel Dounar"
+                placeholder="Nom Prénom"
                 value={form.displayName}
                 onChangeText={setField('displayName')}
                 icon="person-outline"

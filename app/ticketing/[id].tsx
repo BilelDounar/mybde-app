@@ -200,14 +200,14 @@ export default function TicketingScreen() {
             {/* Name & Email */}
             <Input
               label="Nom complet"
-              placeholder="Bilel Dounar"
+              placeholder="Nom Prénom"
               value={name}
               onChangeText={setName}
               icon="person-outline"
             />
             <Input
               label="E-mail"
-              placeholder="bilel@mybde.fr"
+              placeholder="Votre adresse e-mail"
               value={email}
               onChangeText={setEmail}
               keyboardType="email-address"
