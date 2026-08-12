@@ -577,6 +577,22 @@ export const api = {
     return mapBde(data);
   },
 
+  // Création d'un BDE (super admin). `adminUserIds` désigne dès la création les
+  // utilisateurs qui l'administreront : l'API les ajoute comme membres admin et
+  // les fait passer au rôle ADMIN_BDE.
+  createBde: async (data: {
+    name: string;
+    university: string;
+    description?: string;
+    adminUserIds?: string[];
+  }): Promise<BDE> => {
+    const res = await apiRequest<ApiBde>('/bde', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+    return mapBde(res);
+  },
+
   // Édition des informations d'un BDE (admin du BDE ou super admin).
   updateBde: async (
     id: string,
