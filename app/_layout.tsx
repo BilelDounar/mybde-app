@@ -12,7 +12,7 @@ import {
   SpaceGrotesk_700Bold,
 } from '@expo-google-fonts/space-grotesk';
 import { useFonts } from 'expo-font';
-import { Stack } from 'expo-router';
+import { Stack, router, type ErrorBoundaryProps } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { Platform } from 'react-native';
@@ -23,10 +23,38 @@ import { AuthProvider } from '@/context/AuthContext';
 import { DialogProvider } from '@/context/DialogContext';
 import { TransitionProvider } from '@/context/TransitionContext';
 import { AppColors } from '@/constants/theme';
+import { ErrorScreen } from '@/components/ErrorScreen';
 import { installGlobalFont } from '@/lib/global-font';
 
 installGlobalFont();
 SplashScreen.preventAutoHideAsync();
+
+/**
+ * Barrière d'erreur racine, reconnue par expo-router. Sans elle, une exception
+ * levée pendant le rendu laisse un écran blanc en production (React démonte
+ * tout l'arbre sans rien afficher).
+ *
+ * `retry()` retente le rendu de la branche fautive : suffisant pour une erreur
+ * transitoire, sinon l'utilisateur repart de l'accueil.
+ */
+export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
+  return (
+    <ErrorScreen
+      code="500"
+      icon="warning-outline"
+      title="Une erreur est survenue"
+      message="L'application n'a pas réussi à afficher cette page. Vous pouvez réessayer ou revenir à l'accueil."
+      detail={error?.message}
+      actionLabel="Réessayer"
+      onAction={retry}
+      secondaryLabel="Retour à l'accueil"
+      onSecondary={() => {
+        router.replace('/');
+        retry();
+      }}
+    />
+  );
+}
 
 const MyBDETheme = {
   ...DefaultTheme,
