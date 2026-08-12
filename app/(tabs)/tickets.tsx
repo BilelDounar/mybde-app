@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
+import QRCodeGenerator from 'qrcode';
 import { router } from 'expo-router';
 
 import { Card } from '@/components/ui/Card';
@@ -85,14 +86,37 @@ function StudentTicketsScreen() {
     }
   };
 
-  const handleExportPDF = (ticket: Ticket) => {
+  const handleExportPDF = async (ticket: Ticket) => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(ticket.qrCode)}`;
+      // La fenêtre doit être ouverte de façon synchrone dans le gestionnaire de
+      // clic, sinon les navigateurs la bloquent comme popup non sollicitée.
       const w = (window as any).open('', '_blank');
       if (!w) {
         dialog.alert({ title: 'Erreur', message: 'Le popup a été bloqué.' });
         return;
       }
+
+      // QR généré localement en data URI. L'ancienne version passait par
+      // api.qrserver.com : le moindre blocage réseau (bloqueur de contenu,
+      // réseau filtré, hors ligne) produisait un billet sans QR, imprimé
+      // silencieusement puisque l'échec de chargement déclenchait quand même
+      // l'impression.
+      let qrUrl: string;
+      try {
+        qrUrl = await QRCodeGenerator.toDataURL(ticket.qrCode, {
+          width: 250,
+          margin: 1,
+          errorCorrectionLevel: 'M',
+        });
+      } catch {
+        w.close();
+        dialog.alert({
+          title: 'Erreur',
+          message: "Le QR code n'a pas pu être généré. Le billet n'a pas été exporté.",
+        });
+        return;
+      }
+
       w.document.write(`
         <!DOCTYPE html>
         <html lang="fr">
@@ -112,9 +136,9 @@ function StudentTicketsScreen() {
         </head>
         <body>
           <div class="ticket">
-            <h1>${ticket.eventTitle}</h1>
-            <div class="meta">${formatShortDate(ticket.eventDate)} · ${ticket.eventLocation}</div>
-            <div class="number">N° ${ticket.ticketNumber}</div>
+            <h1>${escapeHtml(ticket.eventTitle)}</h1>
+            <div class="meta">${escapeHtml(formatShortDate(ticket.eventDate))} · ${escapeHtml(ticket.eventLocation)}</div>
+            <div class="number">N° ${escapeHtml(ticket.ticketNumber)}</div>
             <img id="qr" src="${qrUrl}" alt="QR Code" style="display:block;margin:0 auto 16px;" />
             <div class="footer">Billet MyBDE — présentez ce QR code à l'entrée</div>
           </div>
@@ -247,7 +271,11 @@ function StudentTicketsScreen() {
               <View style={styles.ticketActions}>
                 <Pressable
                   style={styles.ticketActionBtn}
-                  onPress={() => handleExportPDF(nextTicket)}
+                  onPress={() => {
+                    handleExportPDF(nextTicket).catch(() =>
+                      dialog.alert({ title: 'Erreur', message: "Impossible d'exporter le billet." }),
+                    );
+                  }}
                 >
                   <Ionicons name="download-outline" size={18} color={AppColors.text} />
                   <Text style={styles.ticketActionText}>PDF</Text>
@@ -531,6 +559,20 @@ function formatTicketDate(dateStr: string): string {
 function formatShortDate(dateStr: string): string {
   const d = new Date(dateStr);
   return d.toLocaleDateString('fr-FR', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+/**
+ * Échappe une valeur avant interpolation dans le HTML du billet imprimable.
+ * Les titres et lieux d'événement viennent de l'API : sans échappement, ils
+ * seraient interprétés comme du balisage dans la fenêtre d'impression.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 const styles = StyleSheet.create({
