@@ -113,7 +113,7 @@ export default function SignupScreen() {
           {/* Form */}
           <Input
             label="Nom complet"
-            placeholder="Bilel Dounar"
+            placeholder="Nom Prénom"
             value={name}
             onChangeText={setName}
             icon="person-outline"

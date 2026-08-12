@@ -72,7 +72,7 @@ export default function LoginScreen() {
           {/* Form */}
           <Input
             label="E-mail"
-            placeholder="bilel@mybde.fr"
+            placeholder="Votre adresse e-mail"
             value={email}
             onChangeText={setEmail}
             keyboardType="email-address"
