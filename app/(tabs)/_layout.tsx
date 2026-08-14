@@ -1,6 +1,6 @@
-import { Tabs } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
 import React from 'react';
-import { Platform, StyleSheet, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { HapticTab } from '@/components/haptic-tab';
@@ -14,8 +14,24 @@ const SIDEBAR_BREAKPOINT = 900;
 
 export default function TabLayout() {
   const { width } = useWindowDimensions();
-  const { user } = useAuth();
+  const { user, isAuthenticated, isLoading } = useAuth();
   const useSidebar = width >= SIDEBAR_BREAKPOINT;
+
+  // Ces écrans sont atteignables directement par URL (rechargement du
+  // navigateur, lien partagé) : la redirection posée sur « / » ne les protège
+  // pas. Sans ce garde, une session expirée laisse l'application affichée mais
+  // vide — plus de nom ni de rôle, alors que le bouton Déconnexion est là.
+  if (isLoading) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color={AppColors.primary} />
+      </View>
+    );
+  }
+  if (!isAuthenticated) {
+    return <Redirect href="/(auth)/login" />;
+  }
+
   const isManager = user?.role === 'admin_bde' || user?.role === 'super_admin';
   // Le super admin n'est membre d'aucun BDE : les onglets Événements et Billets
   // (scopés aux BDE rejoints) n'ont pas de sens pour lui et l'inciteraient à tort
@@ -103,6 +119,12 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: AppColors.background,
+  },
   tabBar: {
     backgroundColor: AppColors.white,
     borderTopColor: AppColors.borderLight,

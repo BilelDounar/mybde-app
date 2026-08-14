@@ -108,6 +108,39 @@ describe('auto-refresh sur 401', () => {
     await expect(api.getProfile()).rejects.toBeInstanceOf(ApiError);
     expect(onExpired).toHaveBeenCalledTimes(1);
   });
+
+  it('ne consomme le refresh token qu\'une fois pour des 401 simultanés', async () => {
+    setAuthToken('expired');
+    setRefreshToken('valid-refresh');
+    const onExpired = jest.fn();
+    setOnAuthExpired(onExpired);
+
+    // Le serveur fait tourner le refresh token : une 2e rotation avec l'ancien
+    // échouerait et effacerait la session, alors qu'elle est parfaitement valide.
+    mockFetch.mockImplementation(async (url: string, options: RequestInit) => {
+      if (url.endsWith('/auth/refresh')) {
+        const body = JSON.parse(options.body as string);
+        if (body.refreshToken !== 'valid-refresh') {
+          return jsonResponse({ message: 'Refresh token invalide' }, 401);
+        }
+        return jsonResponse({ accessToken: 'new-acc', refreshToken: 'rotated' });
+      }
+      const auth = (options.headers as Record<string, string>).Authorization;
+      if (auth !== 'Bearer new-acc') {
+        return jsonResponse({ message: 'Unauthorized' }, 401);
+      }
+      return jsonResponse(url.includes('/profile') ? { id: 'u1' } : []);
+    });
+
+    // Rechargement de page : tous les écrans montés appellent l'API en parallèle.
+    await Promise.all([api.getProfile(), api.getTickets(), api.getEvents()]);
+
+    const refreshCalls = mockFetch.mock.calls.filter(([url]: [string]) =>
+      url.endsWith('/auth/refresh'),
+    );
+    expect(refreshCalls).toHaveLength(1);
+    expect(onExpired).not.toHaveBeenCalled();
+  });
 });
 
 describe('api.getAdminEvents', () => {

@@ -27,6 +27,7 @@ import { AppColors, FontFamily, FontSizes, Spacing, BorderRadius } from '@/const
 import { api } from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
 import { useDialog } from '@/context/DialogContext';
+import { useRefreshWhenStale } from '@/hooks/use-refresh-when-stale';
 import type { Ticket, Event } from '@/types';
 
 export default function TicketsScreen() {
@@ -60,6 +61,9 @@ function StudentTicketsScreen() {
   useEffect(() => {
     loadTickets().finally(() => setLoading(false));
   }, [loadTickets]);
+
+  // Un billet acheté depuis un autre écran doit apparaître ici au retour.
+  useRefreshWhenStale(loadTickets);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

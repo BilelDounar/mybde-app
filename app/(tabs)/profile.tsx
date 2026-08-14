@@ -25,6 +25,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useDialog } from '@/context/DialogContext';
 import { useTransition } from '@/context/TransitionContext';
 import { useJoinBde } from '@/hooks/use-join-bde';
+import { useRefreshWhenStale } from '@/hooks/use-refresh-when-stale';
 import { api } from '@/services/api';
 
 interface MenuItemProps {
@@ -68,6 +69,10 @@ export default function ProfileScreen() {
   const isStudent = user?.role === 'student';
   const dialog = useDialog();
   const { markDirty } = useTransition();
+
+  // Adhésions BDE et crédits changent hors de cet écran (rejoindre un BDE,
+  // acheter un billet) : on relit le profil au retour sur l'onglet.
+  useRefreshWhenStale(refreshUser);
 
   // ─── Modale d'édition du profil ────────────────────────────
   const [editVisible, setEditVisible] = useState(false);

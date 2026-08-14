@@ -21,6 +21,7 @@ import { JoinBdeBanner } from '@/components/JoinBdeBanner';
 import { AppColors, FontFamily, FontSizes, Gradients, Spacing, BorderRadius } from '@/constants/theme';
 import { EVENT_CATEGORY_FILTERS, getCategoryMeta } from '@/constants/eventCategories';
 import { useAuth } from '@/context/AuthContext';
+import { useRefreshWhenStale } from '@/hooks/use-refresh-when-stale';
 import { api } from '@/services/api';
 import type { Event } from '@/types';
 
@@ -43,6 +44,8 @@ export default function EventsScreen() {
   useEffect(() => {
     loadEvents().finally(() => setLoading(false));
   }, [loadEvents]);
+
+  useRefreshWhenStale(loadEvents);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);

@@ -17,6 +17,7 @@ import { Avatar } from '@/components/ui/Avatar';
 import { PageTitle } from '@/components/PageTitle';
 import { AppColors, BorderRadius, FontFamily, FontSizes, Spacing } from '@/constants/theme';
 import { api } from '@/services/api';
+import { useRefreshWhenStale } from '@/hooks/use-refresh-when-stale';
 import type { AdminDashboard } from '@/types';
 
 const ROLE_LABELS: Record<string, string> = {
@@ -46,6 +47,9 @@ export function SuperAdminDashboard({ firstName }: { firstName: string }) {
   useEffect(() => {
     load().finally(() => setLoading(false));
   }, [load]);
+
+  // Compteurs de la plateforme : à recharger dès qu'une écriture a eu lieu.
+  useRefreshWhenStale(load);
 
   const onRefresh = async () => {
     setRefreshing(true);

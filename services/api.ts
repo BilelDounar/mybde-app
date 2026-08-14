@@ -77,8 +77,13 @@ async function rawRequest(endpoint: string, options: RequestInit, withAuth: bool
   return fetch(`${API_BASE_URL}${endpoint}`, { ...options, headers });
 }
 
-// Tente de rafraîchir l'access token via le refresh token. Renvoie true si réussi.
-async function tryRefresh(): Promise<boolean> {
+// Incrémenté à chaque renouvellement réussi : permet à une requête partie avec
+// l'ancien token de savoir qu'un autre appel a déjà fait le travail.
+let tokenGeneration = 0;
+// Renouvellement en cours, partagé par tous les appels concurrents.
+let pendingRefresh: Promise<boolean> | null = null;
+
+async function doRefresh(): Promise<boolean> {
   if (!refreshToken) return false;
   try {
     const response = await rawRequest(
@@ -90,11 +95,31 @@ async function tryRefresh(): Promise<boolean> {
     const data: TokenPair = await response.json();
     accessToken = data.accessToken;
     refreshToken = data.refreshToken ?? refreshToken;
+    tokenGeneration += 1;
     await saveSession({ accessToken, refreshToken });
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Renouvelle l'access token, en garantissant une seule tentative à la fois.
+ *
+ * Le serveur fait tourner le refresh token : l'ancien est révoqué dès qu'il est
+ * consommé. Or au rechargement d'une page, tous les écrans montés lancent leurs
+ * appels en parallèle et reçoivent 401 ensemble. Sans ce partage, chacun
+ * enverrait le même refresh token : la première rotation invaliderait celui des
+ * autres, qui concluraient à tort que la session est morte et l'effaceraient —
+ * d'où une déconnexion silencieuse une fois sur deux.
+ */
+async function tryRefresh(): Promise<boolean> {
+  if (!pendingRefresh) {
+    pendingRefresh = doRefresh().finally(() => {
+      pendingRefresh = null;
+    });
+  }
+  return pendingRefresh;
 }
 
 async function apiRequest<T>(
@@ -103,11 +128,15 @@ async function apiRequest<T>(
   opts: { auth?: boolean; retry?: boolean } = {},
 ): Promise<T> {
   const auth = opts.auth ?? true;
+  const generation = tokenGeneration;
   let response = await rawRequest(endpoint, options, auth);
 
   // Auto-refresh transparent sur 401 (une seule tentative).
   if (response.status === 401 && auth && opts.retry !== false) {
-    const refreshed = await tryRefresh();
+    // Le token a déjà été renouvelé pendant que cette requête était en vol :
+    // elle a échoué avec l'ancien, il suffit de la rejouer.
+    const refreshed =
+      tokenGeneration !== generation ? true : await tryRefresh();
     if (refreshed) {
       response = await rawRequest(endpoint, options, true);
     } else {

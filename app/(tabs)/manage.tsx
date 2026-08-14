@@ -29,6 +29,7 @@ import { EVENT_CATEGORIES } from '@/constants/eventCategories';
 import { useAuth } from '@/context/AuthContext';
 import { useDialog } from '@/context/DialogContext';
 import { useTransition } from '@/context/TransitionContext';
+import { useRefreshWhenStale } from '@/hooks/use-refresh-when-stale';
 import { api, type EventInput } from '@/services/api';
 import type { BDE, Event, BdeMember, AdminUser, NewsPost, AdminSummary } from '@/types';
 
@@ -144,21 +145,26 @@ export default function ManageScreen() {
   const upcomingEvents = useMemo(() => events.filter((e) => e.status !== 'completed'), [events]);
   const pastEvents = useMemo(() => events.filter((e) => e.status === 'completed'), [events]);
 
+  // Porte les compteurs affichés (membres, événements) : à recharger après
+  // toute création, sinon le BDE reste affiché avec ses chiffres du montage.
+  const loadManagedBdes = useCallback(async () => {
+    try {
+      const bdes = await api.getManagedBdes();
+      setManagedBdes(bdes);
+      // Un admin BDE n'a qu'un seul BDE : on le sélectionne d'emblée pour
+      // arriver directement sur ses sous-onglets. Le super admin, lui, passe
+      // par le navigateur de BDE (aucune sélection par défaut).
+      if (!isSuperAdmin && bdes.length > 0) {
+        setSelectedBdeId((prev) => prev || bdes[0].id);
+      }
+    } catch (e) {
+      console.error('Erreur BDE gérés:', e);
+    }
+  }, [isSuperAdmin]);
+
   useEffect(() => {
-    api
-      .getManagedBdes()
-      .then((bdes) => {
-        setManagedBdes(bdes);
-        // Un admin BDE n'a qu'un seul BDE : on le sélectionne d'emblée pour
-        // arriver directement sur ses sous-onglets. Le super admin, lui, passe
-        // par le navigateur de BDE (aucune sélection par défaut).
-        if (!isSuperAdmin && bdes.length > 0) {
-          setSelectedBdeId((prev) => prev || bdes[0].id);
-        }
-      })
-      .catch((e) => console.error('Erreur BDE gérés:', e))
-      .finally(() => setLoading(false));
-  }, []);
+    loadManagedBdes().finally(() => setLoading(false));
+  }, [loadManagedBdes]);
 
   const loadSection = useCallback(async () => {
     try {
@@ -231,11 +237,25 @@ export default function ManageScreen() {
     }
   };
 
-  useEffect(() => {
+  // Compteurs globaux de la plateforme (super admin) : même besoin de fraîcheur.
+  const loadGlobalCounters = useCallback(async () => {
     if (!isSuperAdmin) return;
-    api.getAdminSummary().then(setSummary).catch((e) => console.error('Erreur compteurs admin:', e));
-    api.getBdes().then(setAllBdes).catch((e) => console.error('Erreur liste BDE:', e));
+    await Promise.all([
+      api.getAdminSummary().then(setSummary).catch((e) => console.error('Erreur compteurs admin:', e)),
+      api.getBdes().then(setAllBdes).catch((e) => console.error('Erreur liste BDE:', e)),
+    ]);
   }, [isSuperAdmin]);
+
+  useEffect(() => {
+    loadGlobalCounters();
+  }, [loadGlobalCounters]);
+
+  // Une écriture (ici ou dans un autre onglet) rend les compteurs obsolètes.
+  const reloadAll = useCallback(async () => {
+    await Promise.all([loadSection(), loadManagedBdes(), loadGlobalCounters()]);
+  }, [loadSection, loadManagedBdes, loadGlobalCounters]);
+
+  useRefreshWhenStale(reloadAll);
 
   /** Recharge l'utilisateur en cours d'administration + la liste. */
   const refreshManagedUser = async () => {
@@ -246,12 +266,12 @@ export default function ManageScreen() {
     } catch (e) {
       console.error('Erreur rafraîchissement utilisateur:', e);
     }
-    await loadSection();
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadSection();
+    // Geste explicite de l'utilisateur : on recharge tout, compteurs compris.
+    await reloadAll();
     setRefreshing(false);
   };
 
@@ -324,8 +344,8 @@ export default function ManageScreen() {
         await api.createEvent(payload);
       }
       setFormVisible(false);
+      // markDirty() suffit à recharger la section et les compteurs (useRefreshWhenStale).
       markDirty();
-      await loadSection();
     } catch (e) {
       dialog.alert({
         title: 'Erreur',
@@ -345,7 +365,7 @@ export default function ManageScreen() {
       onConfirm: async () => {
         try {
           await api.deleteEvent(ev.id);
-          await loadSection();
+          markDirty();
         } catch (e) {
           dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Suppression impossible' });
         }
@@ -367,7 +387,7 @@ export default function ManageScreen() {
   const toggleMemberAdmin = async (m: BdeMember) => {
     try {
       await api.setMemberAdmin(selectedBdeId, m.userId, !m.isAdmin);
-      await loadSection();
+      markDirty();
     } catch (e) {
       dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Action impossible' });
     }
@@ -382,7 +402,7 @@ export default function ManageScreen() {
       onConfirm: async () => {
         try {
           await api.removeMember(selectedBdeId, m.userId);
-          await loadSection();
+          markDirty();
         } catch (e) {
           dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Action impossible' });
         }
@@ -545,7 +565,6 @@ export default function ManageScreen() {
       setEditingNewsId(null);
       setNewsVisible(false);
       markDirty();
-      await loadSection();
       dialog.alert({ title: editingNewsId ? 'Modifié' : 'Publié', message: 'L\'actualité a été enregistrée.' });
     } catch (e) {
       dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Publication impossible' });
@@ -561,7 +580,7 @@ export default function ManageScreen() {
       onConfirm: async () => {
         try {
           await api.deleteNews(post.id);
-          await loadSection();
+          markDirty();
         } catch (e) {
           dialog.alert({ title: 'Erreur', message: e instanceof Error ? e.message : 'Suppression impossible' });
         }
@@ -1129,7 +1148,7 @@ export default function ManageScreen() {
         dialog={dialog}
         onRefresh={async () => { markDirty(); await refreshManagedUser(); }}
         onClose={() => setManagedUser(null)}
-        onDeleted={async () => { markDirty(); setManagedUser(null); await loadSection(); }}
+        onDeleted={() => { markDirty(); setManagedUser(null); }}
       />
 
       {/* Modale d'édition des informations d'un BDE (admin du BDE / super admin) */}

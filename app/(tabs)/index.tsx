@@ -29,6 +29,7 @@ import { AppColors, FontFamily, FontSizes, Spacing, BorderRadius } from '@/const
 import { getCategoryMeta } from '@/constants/eventCategories';
 import { api } from '@/services/api';
 import { useAuth } from '@/context/AuthContext';
+import { useRefreshWhenStale } from '@/hooks/use-refresh-when-stale';
 import { formatRelative } from '@/services/format';
 import type { Event, NewsPost } from '@/types';
 
@@ -64,6 +65,9 @@ export default function HomeScreen() {
   useEffect(() => {
     loadData().finally(() => setLoading(false));
   }, [loadData]);
+
+  // Une publication faite depuis l'onglet Gestion doit apparaître ici au retour.
+  useRefreshWhenStale(loadData);
 
   const featuredEvents = useMemo(() => {
     const published = events.filter((e) => e.status === 'published');
