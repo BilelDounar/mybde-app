@@ -823,6 +823,24 @@ export default function ManageScreen() {
               icon={<Ionicons name="create-outline" size={18} color={AppColors.primary} />}
               style={styles.cta}
             />
+            {/* Le code d'invitation décrit le BDE (comment le rejoindre), il a
+                donc sa place ici plutôt que dans la trésorerie. */}
+            {selectedBde.joinCode && (
+              <Card style={styles.joinCodeCard}>
+                <Text style={styles.treasuryLabel}>Code d&apos;invitation</Text>
+                <Text style={styles.joinCodeValue}>{selectedBde.joinCode}</Text>
+                <Text style={styles.treasuryHint}>
+                  Partagez ce code à 6 chiffres pour laisser un étudiant rejoindre {selectedBde.name}.
+                </Text>
+                <View style={styles.joinCodeActions}>
+                  <Button title="Partager le code" size="sm" onPress={shareJoinCode} style={{ flex: 1 }} />
+                  <Button title="Inviter par lien" variant="secondary" size="sm" onPress={shareJoinLink} style={{ flex: 1 }} />
+                </View>
+                <View style={[styles.joinCodeActions, { marginTop: Spacing.sm }]}>
+                  <Button title="Régénérer le code" variant="outline" size="sm" onPress={regenerateJoinCode} style={{ flex: 1 }} />
+                </View>
+              </Card>
+            )}
           </>
         )}
 
@@ -1005,35 +1023,29 @@ export default function ManageScreen() {
           />
         )}
 
-        {/* ─── TRÉSORERIE + CODE D'INVITATION ─── */}
+        {/* ─── TRÉSORERIE ─── */}
         {inBdeDetail && section === 'treasury' && (
           selectedBde ? (
-            <>
-              <Card style={styles.treasuryCard}>
-                <Text style={styles.treasuryLabel}>Solde de {selectedBde.name}</Text>
-                <Text style={styles.treasuryAmount}>{(selectedBde.balance ?? 0).toFixed(2)} €</Text>
+            <Card style={styles.treasuryCard}>
+              <Text style={styles.treasuryLabel}>Solde de {selectedBde.name}</Text>
+              <Text style={styles.treasuryAmount}>{(selectedBde.balance ?? 0).toFixed(2)} €</Text>
+              {/* La trésorerie appartient à l'association : le super admin la
+                  consulte (supervision) mais ne déplace pas l'argent d'un BDE.
+                  Le retrait reste réservé aux administrateurs du BDE. */}
+              {isSuperAdmin ? (
                 <Text style={styles.treasuryHint}>
-                  Issu des ventes de billets. Retraits par paliers de 20 €, commission MyBDE de 5 %.
+                  Issu des ventes de billets. Seuls les administrateurs de {selectedBde.name} peuvent
+                  retirer ces fonds.
                 </Text>
-                <Button title="Retirer des fonds" onPress={withdraw} style={{ marginTop: Spacing.base }} fullWidth />
-              </Card>
-              {selectedBde.joinCode && (
-                <Card style={styles.joinCodeCard}>
-                  <Text style={styles.treasuryLabel}>Code d&apos;invitation</Text>
-                  <Text style={styles.joinCodeValue}>{selectedBde.joinCode}</Text>
+              ) : (
+                <>
                   <Text style={styles.treasuryHint}>
-                    Partagez ce code à 6 chiffres pour laisser un étudiant rejoindre {selectedBde.name}.
+                    Issu des ventes de billets. Retraits par paliers de 20 €, commission MyBDE de 5 %.
                   </Text>
-                  <View style={styles.joinCodeActions}>
-                    <Button title="Partager le code" size="sm" onPress={shareJoinCode} style={{ flex: 1 }} />
-                    <Button title="Inviter par lien" variant="secondary" size="sm" onPress={shareJoinLink} style={{ flex: 1 }} />
-                  </View>
-                  <View style={[styles.joinCodeActions, { marginTop: Spacing.sm }]}>
-                    <Button title="Régénérer le code" variant="outline" size="sm" onPress={regenerateJoinCode} style={{ flex: 1 }} />
-                  </View>
-                </Card>
+                  <Button title="Retirer des fonds" onPress={withdraw} style={{ marginTop: Spacing.base }} fullWidth />
+                </>
               )}
-            </>
+            </Card>
           ) : (
             <Empty label="Aucun BDE à gérer" />
           )
