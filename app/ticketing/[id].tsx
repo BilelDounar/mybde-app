@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { AuthGate } from '@/components/AuthGate';
 import { Card } from '@/components/ui/Card';
 import { PageTitle } from '@/components/PageTitle';
 import { AppColors, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
@@ -25,7 +26,15 @@ import type { Event } from '@/types';
 type Step = 1 | 2 | 3;
 type PaymentMethod = 'card' | 'balance';
 
-export default function TicketingScreen() {
+export default function TicketingRoute() {
+  return (
+    <AuthGate>
+      <TicketingScreen />
+    </AuthGate>
+  );
+}
+
+function TicketingScreen() {
   const { id, quantity: quantityParam } = useLocalSearchParams<{ id: string; quantity?: string }>();
   const { user, refreshUser } = useAuth();
   const dialog = useDialog();

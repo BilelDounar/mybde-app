@@ -1,8 +1,9 @@
-import { Redirect, Tabs } from 'expo-router';
+import { Tabs } from 'expo-router';
 import React from 'react';
-import { ActivityIndicator, Platform, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { Platform, StyleSheet, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AuthGate } from '@/components/AuthGate';
 import { HapticTab } from '@/components/haptic-tab';
 import { SidebarTabBar } from '@/components/navigation/SidebarTabBar';
 import { AppColors, FontSizes } from '@/constants/theme';
@@ -13,24 +14,17 @@ import { useAuth } from '@/context/AuthContext';
 const SIDEBAR_BREAKPOINT = 900;
 
 export default function TabLayout() {
-  const { width } = useWindowDimensions();
-  const { user, isAuthenticated, isLoading } = useAuth();
-  const useSidebar = width >= SIDEBAR_BREAKPOINT;
+  return (
+    <AuthGate>
+      <TabNavigator />
+    </AuthGate>
+  );
+}
 
-  // Ces écrans sont atteignables directement par URL (rechargement du
-  // navigateur, lien partagé) : la redirection posée sur « / » ne les protège
-  // pas. Sans ce garde, une session expirée laisse l'application affichée mais
-  // vide — plus de nom ni de rôle, alors que le bouton Déconnexion est là.
-  if (isLoading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color={AppColors.primary} />
-      </View>
-    );
-  }
-  if (!isAuthenticated) {
-    return <Redirect href="/(auth)/login" />;
-  }
+function TabNavigator() {
+  const { width } = useWindowDimensions();
+  const { user } = useAuth();
+  const useSidebar = width >= SIDEBAR_BREAKPOINT;
 
   const isManager = user?.role === 'admin_bde' || user?.role === 'super_admin';
   // Le super admin n'est membre d'aucun BDE : les onglets Événements et Billets
@@ -119,12 +113,6 @@ export default function TabLayout() {
 }
 
 const styles = StyleSheet.create({
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: AppColors.background,
-  },
   tabBar: {
     backgroundColor: AppColors.white,
     borderTopColor: AppColors.borderLight,

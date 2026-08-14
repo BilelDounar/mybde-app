@@ -10,6 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AuthGate } from '@/components/AuthGate';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { PageTitle } from '@/components/PageTitle';
@@ -27,7 +28,15 @@ const AMOUNTS = [
 
 type Step = 1 | 2 | 3;
 
-export default function RechargeScreen() {
+export default function RechargeRoute() {
+  return (
+    <AuthGate>
+      <RechargeScreen />
+    </AuthGate>
+  );
+}
+
+function RechargeScreen() {
   const { user, refreshUser } = useAuth();
   const dialog = useDialog();
 

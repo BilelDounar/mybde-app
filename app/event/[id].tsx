@@ -19,6 +19,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { AvatarStack } from '@/components/ui/Avatar';
 import { PageTitle } from '@/components/PageTitle';
+import { AuthGate } from '@/components/AuthGate';
 import { LeafletMap } from '@/components/ui/LeafletMap';
 import { AppColors, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
 import { getCategoryMeta } from '@/constants/eventCategories';
@@ -31,7 +32,15 @@ import type { Event, EventParticipant } from '@/types';
 // la mise en page mobile (colonne unique + barre d'achat fixe) est inchangée.
 const DESKTOP_BREAKPOINT = 1024;
 
-export default function EventDetailScreen() {
+export default function EventDetailRoute() {
+  return (
+    <AuthGate>
+      <EventDetailScreen />
+    </AuthGate>
+  );
+}
+
+function EventDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const { width: SCREEN_WIDTH } = useWindowDimensions();
   const { user } = useAuth();

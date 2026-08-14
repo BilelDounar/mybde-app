@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
+import { AuthGate } from '@/components/AuthGate';
 import { Button } from '@/components/ui/Button';
 import { PageTitle } from '@/components/PageTitle';
 import { AppColors, FontFamily, FontSizes, Spacing, BorderRadius } from '@/constants/theme';
@@ -39,7 +40,15 @@ const SLIDES: Slide[] = [
   },
 ];
 
-export default function OnboardingScreen() {
+export default function OnboardingRoute() {
+  return (
+    <AuthGate>
+      <OnboardingScreen />
+    </AuthGate>
+  );
+}
+
+function OnboardingScreen() {
   const [index, setIndex] = useState(0);
   const isFirst = index === 0;
   const isLast = index === SLIDES.length - 1;
